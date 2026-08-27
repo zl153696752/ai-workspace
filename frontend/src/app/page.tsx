@@ -9,15 +9,17 @@ export default function Home() {
   const sendMessage = async () => {
     if (!input.trim()) return;
 
-    const userMsg = { role: "user", content: input };
+    const userMsg = { role: "user", content: input };  
+    const newMessages = [...messages, userMsg];  // ← 改动1：先算出包含本句话的完整历史
     setMessages(prev => [...prev, userMsg]);
     setInput("");
     setLoading(true);
 
-    const response = await fetch(
-      "http://localhost:8000/api/chat?message=" + encodeURIComponent(input),
-      { method: "POST" }
-    );
+    const response = await fetch("http://localhost:8000/api/chat", {  
+      method: "POST",  
+      headers: { "Content-Type": "application/json" },  // ← 改动2：告诉后端我发的是 JSON（必须有）  
+      body: JSON.stringify({ messages: newMessages }),   // ← 改动3：发完整历史，不再用 ?message= 参数  
+    });
 
     const reader = response.body?.getReader();
     const decoder = new TextDecoder();

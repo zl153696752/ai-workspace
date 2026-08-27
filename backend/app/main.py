@@ -4,6 +4,8 @@ from fastapi.responses import StreamingResponse
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
+from pydantic import BaseModel
+
 
 load_dotenv()
 
@@ -21,15 +23,16 @@ client = OpenAI(
     base_url="https://api.deepseek.com"
 )
 
+class ChatRequest(BaseModel):
+    messages: list  # 接收前端发来的完整对话历史
 
 @app.post("/api/chat")
-async def chat(message: str):
-    """流式对话接口"""
-
+async def chat(req: ChatRequest):
+    """流式对话接口（支持多轮上下文）"""
     def generate():
         response = client.chat.completions.create(
             model="deepseek-v4-flash",
-            messages=[{"role": "user", "content": message}],
+            messages=req.messages,   # ← 核心改动：把整个历史传给模型（原来只传一句话）
             stream=True
         )
         for chunk in response:
