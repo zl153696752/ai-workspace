@@ -9,6 +9,7 @@ from fastapi import UploadFile, File, HTTPException
 import hashlib  # 新增：算内容指纹
 import chromadb
 from pypdf import PdfReader
+import io
 
 load_dotenv()
 
@@ -38,13 +39,12 @@ CHUNK_SIZE = 300  # 每个切片最多 300 字（字太短上下文不足，太�
 CHUNK_OVERLAP = 50  # 相邻切片重叠 50 字，防止句子被截断
 
 
-def extract_text(save_path: str, ext: str) -> str:
-    """从上传文件里提取纯文字（.pdf 用 pypdf 解析，txt/md 直接读）"""
+def extract_text(content: bytes, ext: str) -> str:
+    """从文件内容（字节）提取纯文字，不再依赖磁盘文件"""
     if ext == ".pdf":
-        reader = PdfReader(save_path)
+        reader = PdfReader(io.BytesIO(content))  # BytesIO：把字节包装成内存中的"假文件"给 pypdf 读
         return "\n".join((page.extract_text() or "") for page in reader.pages)
-    with open(save_path, "r", encoding="utf-8") as f:
-        return f.read()
+    return content.decode("utf-8", errors="ignore")  # errors="ignore"：遇到编码怪异的字节直接跳过，不崩
 
 
 def split_text(text: str) -> list:
@@ -125,30 +125,29 @@ async def upload(file: UploadFile = File(...)):
     content = await file.read()
     content_hash = hashlib.md5(content).hexdigest()
 
-    # 3. 用指纹作为磁盘文件名：同内容 → 同文件名 → 重复上传只覆盖同一个文件
+    # 3. 先提取文字、切片：提不出内容就直接拒收，文件不落盘（新位置）
+    text = extract_text(content, ext)  # 注意：现在传的是 content 字节，不再是路径
+    chunks = split_text(text)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="未能提取到文字，可能是图片型/扫描件文件，暂不支持")
+
+    # 4. 校验通过，才写盘（原逻辑不变）
     save_name = f"{content_hash}{ext}"
     save_path = os.path.join(UPLOAD_DIR, save_name)
-
-    # 4. 写入磁盘（内容上面已读好，这里只管写）
     with open(save_path, "wb") as f:
         f.write(content)
 
-    # 5. 入库知识库：提取文字 → 切片 → 向量化存入 Chroma（新增）
-    text = extract_text(save_path, ext)
-    chunks = split_text(text)
-    if chunks:
-        ids = [f"{content_hash}-{i}" for i in range(len(chunks))]
-        # 先查是不是已经入过库（只用于给前端返回提示，不影响去重逻辑）
-        duplicated = len(collection.get(ids=ids)["ids"]) > 0
-        # upsert = 存在则更新、不存在则插入；同一份文件传多少次结果都一样（幂等）
-        collection.upsert(
-            documents=chunks,
-            ids=ids,
-            metadatas=[{"filename": file.filename}] * len(chunks),
-        )
-        print(f"知识库切片总数: {collection.count()}")  # 验证观察点，打印在后端终端
-    else:
-        duplicated = False
+    # 5. 入库知识库：
+    ids = [f"{content_hash}-{i}" for i in range(len(chunks))]
+    # 先查是不是已经入过库（只用于给前端返回提示，不影响去重逻辑）
+    duplicated = len(collection.get(ids=ids)["ids"]) > 0
+    # upsert = 存在则更新、不存在则插入；同一份文件传多少次结果都一样（幂等）
+    collection.upsert(
+        documents=chunks,
+        ids=ids,
+        metadatas=[{"filename": file.filename}] * len(chunks),
+    )
+    print(f"知识库切片总数: {collection.count()}")  # 验证观察点，打印在后端终端
 
-    return {"filename": file.filename, "saved_as": save_name, "size": len(content), "chunks": len(chunks),
-            "duplicated": duplicated}
+    return {"filename": file.filename, "saved_as": save_name, "size": len(content),
+            "chunks": len(chunks), "duplicated": duplicated}
