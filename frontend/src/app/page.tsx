@@ -5,6 +5,8 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{role: string, content: string}[]>([]);
   const [loading, setLoading] = useState(false);
+  const [files, setFiles] = useState<string[]>([]);   // 已上传的文件名列表
+  const [uploading, setUploading] = useState(false);
 
   const sendMessage = async () => {
     if (!input.trim()) return;
@@ -40,9 +42,50 @@ export default function Home() {
     setLoading(false);
   };
 
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    const formData = new FormData();
+    formData.append("file", file);  // "file" 这个名字要和后端 UploadFile 的参数名一致
+
+    const res = await fetch("http://localhost:8000/api/upload", {
+      method: "POST",
+      body: formData,  // ⚠️ 注意：发 FormData 千万不要手动设置 Content-Type！
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.detail);  // 后端返回的错误信息，比如“不支持的文件类型”
+    } else {
+      const data = await res.json();
+      setFiles(prev => [...prev, data.filename]);
+    }
+
+    setUploading(false);
+    e.target.value = "";  // 清空 input，允许再次选择同一个文件
+  };
+
   return (
     <div className="max-w-2xl mx-auto p-4">
       <h1 className="text-2xl font-bold mb-4">AI Workspace</h1>
+
+      <div className="border rounded p-4 mb-4">
+        <div className="flex items-center gap-2">
+          <input
+            type="file"
+            accept=".txt,.md,.pdf"
+            onChange={handleUpload}
+            disabled={uploading}
+            className="text-sm"
+          />
+          {uploading && <span className="text-gray-400 text-sm">上传中...</span>}
+        </div>
+        {files.length > 0 && (
+          <div className="mt-2 text-sm text-gray-600">已上传：{files.join("、")}</div>
+        )}
+      </div>
 
       <div className="space-y-4 mb-4 min-h-[400px] border rounded p-4">
         {messages.map((msg, i) => (
