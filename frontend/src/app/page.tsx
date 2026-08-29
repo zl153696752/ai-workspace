@@ -3,7 +3,13 @@ import { useState } from "react";
 
 export default function Home() {
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<{role: string, content: string}[]>([]);
+
+  type Source = { id: number; filename: string; snippet: string };
+  type Msg = { role: string; content: string; sources?: Source[] };
+
+  // 组件内：
+  const [messages, setMessages] = useState<Msg[]>([]);
+
   const [loading, setLoading] = useState(false);
   const [files, setFiles] = useState<string[]>([]);   // 已上传的文件名列表
   const [uploading, setUploading] = useState(false);
@@ -23,22 +29,51 @@ export default function Home() {
       body: JSON.stringify({ messages: newMessages }),   // ← 改动3：发完整历史，不再用 ?message= 参数  
     });
 
-    const reader = response.body?.getReader();
-    const decoder = new TextDecoder();
-    let aiContent = "";
-
-    setMessages(prev => [...prev, { role: "assistant", content: "" }]);
-
-    while (reader) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      aiContent += decoder.decode(value);
-      setMessages(prev => {
-        const newMsgs = [...prev];
-        newMsgs[newMsgs.length - 1] = { role: "assistant", content: aiContent };
-        return newMsgs;
-      });
-    }
+    const reader = response.body?.getReader();  
+    const decoder = new TextDecoder();  
+    let aiContent = "";  
+    let buffer = "";   // SSE 缓冲区：网络分包和消息边界不对齐，必须攒够一条完整消息再解析  
+  
+    setMessages(prev => [...prev, { role: "assistant", content: "" }]);  
+  
+    while (reader) {  
+      const { done, value } = await reader.read();  
+      if (done) break;  
+      buffer += decoder.decode(value, { stream: true });   // stream:true 防中文被拦腰截成乱码（多字节字符）  
+  
+      // 一条完整的 SSE 消息以空行 "\n\n" 结束；最后一段可能不完整，留在 buffer 里等下一轮  
+      const events = buffer.split("\n\n");  
+      buffer = events.pop() ?? "";  
+  
+      for (const evt of events) {  
+        if (!evt.trim()) continue;  
+        let name = "";  
+        let data = "";  
+        for (const line of evt.split("\n")) {  
+          if (line.startsWith("event:")) name = line.slice(6).trim();  
+          else if (line.startsWith("data:")) data = line.slice(5).trim();  
+        }  
+        if (!data) continue;  
+        const payload = JSON.parse(data);  
+  
+        if (name === "sources") {  
+          // 来源事件：写进当前 AI 消息的 sources 字段（卡片会立刻渲染出来，不用等回答完成）  
+          setMessages(prev => {  
+            const next = [...prev];  
+            next[next.length - 1] = { ...next[next.length - 1], sources: payload };  
+            return next;  
+          });  
+        } else if (name === "token") {  
+          aiContent += payload.content;  
+          setMessages(prev => {  
+            const next = [...prev];  
+            next[next.length - 1] = { ...next[next.length - 1], content: aiContent };  
+            return next;  
+          });  
+        }  
+        // done 事件：无需处理，流结束后下面会重置 loading  
+      }  
+    }  
     setLoading(false);
   };
 
@@ -95,6 +130,18 @@ export default function Home() {
             }`}>
               {msg.content}
             </div>
+            {msg.sources && msg.sources.length > 0 && (  
+              <div className="mt-2 text-xs text-gray-500 space-y-1 max-w-md">  
+                {msg.sources.map(s => (  
+                  <details key={s.id} className="bg-gray-50 border rounded px-2 py-1">  
+                    <summary className="cursor-pointer select-none">  
+                      [{s.id}] {s.filename}  
+                    </summary>  
+                    <div className="mt-1 whitespace-pre-wrap leading-relaxed">{s.snippet}</div>  
+                  </details>  
+                ))}  
+              </div>  
+            )}
           </div>
         ))}
         {loading && <div className="text-gray-400">AI 正在思考...</div>}

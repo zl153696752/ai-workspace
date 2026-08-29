@@ -10,6 +10,7 @@ import hashlib  # 新增：算内容指纹
 import chromadb
 from pypdf import PdfReader
 import io
+import json
 
 load_dotenv()
 
@@ -67,50 +68,70 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    """流式对话接口（支持多轮上下文 + 知识库检索）"""
+    """流式对话接口（SSE：sources / token / done 三种事件）"""
     messages = req.messages
 
-    # ===== RAG 核心 1：检索 =====
-    # 用用户最新一句话去知识库里找最相关的 3 个切片（问题自动转向量、自动比距离）
-    if collection.count() > 0:  # 知识库里有文档才检索，空的直接跳过，避免报错
+    # ===== RAG 核心 1：检索（include 新增 metadatas，把文件名带回来）=====
+    if collection.count() > 0:
         last_question = messages[-1]["content"]
-        # include 参数：除了文档原文，把“距离”也返回回来（距离越小越相关）
         results = collection.query(
             query_texts=[last_question],
             n_results=3,
-            include=["documents", "distances"]
+            include=["documents", "distances", "metadatas"]   # ← 新增 metadatas
         )
-        # 相关性过滤：只保留距离 < 1.2 的切片，无关问题（如闲聊）会被全部过滤掉（阈值是经验值，可自行调）
-        retrieved = [
-            doc for doc, dist in zip(results["documents"][0], results["distances"][0])
+        # 阈值过滤照旧，只是连 metadata 一起打包成 (文档, 元数据) 元组
+        hits = [
+            (doc, meta) for doc, dist, meta in zip(
+                results["documents"][0], results["distances"][0], results["metadatas"][0])
             if doc and doc.strip() and dist < 1.2
         ]
     else:
-        retrieved = []
+        hits = []
 
-    # ===== RAG 核心 2：拼提示词 =====
-    # 检索到资料，就以 system 消息的身份放在对话历史最前面（模型会把它当“背景知识”）
-    if retrieved:
-        context = "\n\n".join(retrieved)
+    # ===== 新增：构建编号引用源（按“文件名+内容”去重，重复切片只算一条来源）=====
+    sources = []          # 发给前端的卡片列表：[{id, filename, snippet}]
+    context_parts = []    # 拼进提示词的编号资料：[1] (来自: xx) 内容...
+    seen = set()
+    for doc, meta in hits:
+        key = (meta.get("filename"), doc)
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append({"id": len(sources) + 1, "filename": meta.get("filename", "未知来源"), "snippet": doc})
+        context_parts.append(f"[{len(sources)}] (来自: {meta.get('filename', '未知来源')})\n{doc}")
+
+    # ===== RAG 核心 2：拼提示词（升级为“编号版”，并要求模型标注引用）=====
+    if sources:
+        context = "\n\n".join(context_parts)
         system_prompt = (
-            "你是企业知识库助手。以下是参考资料：\n\n"
+            "你是企业知识库助手。以下是参考资料，每条以编号开头：\n\n"
             f"{context}\n\n"
-            "请基于以上参考资料回答用户问题。"
-            "如果资料中没有相关内容，请如实说‘知识库中未提及’，不要编造。"
+            "请基于以上参考资料回答用户问题。要求：\n"
+            "1. 在引用了资料的句子末尾标注资料编号，如 [1]，编号只能来自上述资料；\n"
+            "2. 如果资料中没有相关内容，请如实说‘知识库中未提及’，不要编造。"
         )
         messages = [{"role": "system", "content": system_prompt}] + messages
 
     def generate():
+        # ① 先发 sources 事件：结构化数据单独一条消息，先于正文到达，前端可提前渲染卡片
+        if sources:
+            yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
+
         response = client.chat.completions.create(
             model="deepseek-v4-flash",
-            messages=messages,  # 注意：用的是拼好资料的 messages，不是 req.messages
+            messages=messages,
             stream=True
         )
+        # ② 逐字流式：每个 token 包成一条 token 事件（JSON 转义保证换行不撕裂消息帧）
         for chunk in response:
             if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+                piece = chunk.choices[0].delta.content
+                yield f"event: token\ndata: {json.dumps({'content': piece}, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/plain")
+        # ③ 结束事件：明确告诉前端流结束了（不依赖连接断开来判断）
+        yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")   # ← text/plain 换掉了
 
 
 @app.post("/api/upload")
