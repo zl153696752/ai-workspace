@@ -1,8 +1,9 @@
-"use client";
+﻿"use client";
 import { useEffect, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Bot,
+  Download,
   CalendarDays,
   Check,
   Copy,
@@ -173,6 +174,12 @@ export default function Home() {
 
     let aiContent = ""; // 提升到 try 外：catch 里要根据已生成量决定错误提示的写法
 
+    // 占位气泡必须在 fetch 前出生：后端决策调用在响应返回前就跑完了（最漫长的 1~3 秒），
+    // 等 fetch 结束再建气泡，等待期屏幕上一片空白，跳动点永远看不到（异常路径由 catch/finally 兜底）
+    setConversations(prev =>
+      prev.map(c => (c.id === convId ? { ...c, messages: [...c.messages, { role: "assistant", content: "" }] } : c))
+    );
+
     try {
       const response = await fetch("http://localhost:8000/api/chat", {
         method: "POST",
@@ -194,12 +201,7 @@ export default function Home() {
         throw new Error(detail);
       }
       const decoder = new TextDecoder();
-      let buffer = ""; // SSE 缓冲区：网络分包和消息边界不对齐，必须攒够一条完整消息再解析
-
-      // 先占位一条空 AI 消息（流式内容逐段填进去）
-      setConversations(prev =>
-        prev.map(c => (c.id === convId ? { ...c, messages: [...c.messages, { role: "assistant", content: "" }] } : c))
-      );
+      let buffer = ""; // SSE 缓冲区：网络分包和消息边界不对齐，必须攒够一条完整消息再解析（占位气泡已在 fetch 前创建）
 
       while (reader) {
         const { done, value } = await reader.read();
@@ -221,7 +223,12 @@ export default function Home() {
           if (!data) continue;
           const payload = JSON.parse(data);
 
-          if (name === "sources") {
+          if (name === "tool") {
+            // 第 7 步：模型决定查知识库时，先给用户一个明确的状态提示，替代干等（正文首 token 一到就被干净替换）
+            if (payload.called) {
+              patchLastMsg(convId, m => ({ ...m, content: "🔍 正在检索知识库…" }));
+            }
+          } else if (name === "sources") {
             // 来源事件：写进当前 AI 消息的 sources 字段（卡片先于回答渲染出来）
             patchLastMsg(convId, m => ({ ...m, sources: payload }));
           } else if (name === "token") {
@@ -240,8 +247,7 @@ export default function Home() {
         // 用户点了停止：已流出的内容保留，静默结束，不提示错误
       } else {
         // 网络失败/后端没开/后端报错：把错误写进气泡，不留一个卡死的空消息；
-        // 已有 AI 占位消息就追加提示行（不丢已生成内容），还没建占位（fetch 就失败）就新建一条错误消息，
-        // 绝不能直接 patch 最后一条——那可能是用户消息，会把错误文案糊到用户头上
+        // 占位气泡此时必然已存在（fetch 前创建），错误文案直接填进空泡；“新建消息”分支仅作双保险
         const msgText = err instanceof Error && err.message ? err.message : "无法连接后端服务，请确认后端已启动";
         const appendText = aiContent ? `\n\n> ⚠️ ${msgText}` : `⚠️ ${msgText}`;
         setConversations(prev =>
@@ -366,7 +372,35 @@ export default function Home() {
     }
   };
 
-  // 新对话：只是切回"未选中"状态，历史会话都还在列表里
+  // 下载知识库原文件：不能用 <a> 直跳（后端报 404 时会把整个 SPA 页面导航走），
+  // 改用 fetch + blob：成功才触发下载，失败把后端 detail 弹出来，页面纹丝不动（与第 6.5 步错误提示原则一致）
+  const downloadFile = async (filename: string) => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/files/${encodeURIComponent(filename)}/download`);
+      if (!res.ok) {
+        let detail = "下载失败";
+        try {
+          const err = await res.json();
+          if (err?.detail) detail = err.detail;
+        } catch {
+          // 响应体不是 JSON 就用默认提示（同 handleUpload 的兜底写法）
+        }
+        alert(detail);
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob); // 把文件流变成临时地址，交给浏览器下载后立刻释放，不留内存尾巴
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename; // 指定下载后的文件名（不指定就是哈希名）
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("下载失败：无法连接后端服务，请确认后端已启动");
+    }
+  };
+  
+  // 新对话：只是切回“未选中”状态，历史会话都还在列表里
   const newConversation = () => {
     setActiveId(null);
     setInput("");
@@ -448,6 +482,13 @@ export default function Home() {
                       {f.filename}
                     </span>
                     <span className="text-[10px] text-gray-300 shrink-0">{f.chunks}片</span>
+                    <button
+                      onClick={() => downloadFile(f.filename)}
+                      title="下载原文件"
+                      className="opacity-0 group-hover/file:opacity-100 p-0.5 rounded text-gray-300 hover:text-[#4d6bfe] transition-all shrink-0"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                    </button>
                     <button
                       onClick={() => deleteFile(f.filename)}
                       title="从知识库删除该文档"
