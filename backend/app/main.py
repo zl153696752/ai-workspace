@@ -17,6 +17,10 @@ from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool as langchain_tool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor  # langchain 1.x 把老 Agent API 挪进了 classic 兼容包（见手册 10.9 坑 4）
+# langgraph（第 8 步：预构建 ReAct Agent，流式输出）
+# langgraph 1.x 把 create_react_agent 标记弃用，新家：langchain.agents.create_agent（参数名见下方注释）
+from langchain.agents import create_agent as create_react_agent
+from langchain_core.messages import AIMessageChunk  # 流式过滤用：只把模型的正文块转给前端（11.6 的过滤器要它）
 
 load_dotenv()
 
@@ -106,6 +110,7 @@ def search_knowledge_base(query: str) -> list:
 
 # ===== 第 7 步：LangChain 版 Agent（对照实现）=====
 USE_LANGCHAIN = False  # 开关：默认 False 改成 True 后 /api/chat 由 LangChain Agent 接管，用来对比两版的行为差异
+USE_LANGGRAPH = True   # 第 8 步：新主力。优先级最高：True 时 /api/chat 由 LangGraph 接管（流式+卡片都有）
 
 
 # @tool 装饰器：把普通函数变成工具，工具描述直接从函数签名和 docstring 自动生成（手写版要写几十行 JSON）
@@ -134,6 +139,20 @@ lc_prompt = ChatPromptTemplate.from_messages([
 lc_agent = create_tool_calling_agent(lc_llm, [search_knowledge_base_lc], lc_prompt)
 lc_executor = AgentExecutor(agent=lc_agent, tools=[search_knowledge_base_lc],
                             verbose=True)  # verbose=True：思考过程打印在后端终端，对比手写版时重点看这个
+# ===== 第 8 步：LangGraph 版 Agent（新主力：流式输出 + 护栏齐全）=====
+# 设计取舍（面试必讲）：检索由我们的代码先做（卡片先出场、未命中自然回应可控），
+# 图只负责“基于资料可靠地生成回答”——确定性的活给代码，生成性的活给模型，还省一次决策调用。
+# 工具照常注册：资料没查到时，模型可以主动复核查一下（图上循环自动支持，手写版做不到）
+GRAPH_SYSTEM = (
+    PERSONA + "\n\n回答规则：\n"
+    "1. 用户提供【编号资料】时，只基于资料回答；引用了资料的句子末尾标注编号如[1][2]；资料没覆盖的就如实说明。\n"
+    "2. 【编号资料】为空或和问题无关时，如实告知知识库中没有相关资料（不要调用工具，不要编造）。\n"
+    "3. 用户的问题需要知识库里的事实、而【编号资料】显然没覆盖时，可以调用 search_knowledge_base 复核一次。\n"
+    "4. 与知识库无关的常识和闲聊，直接回答，不要调用工具。"
+)
+# create_react_agent（实为新 API create_agent 的别名）= 预构建的 ReAct 图（思考⇄工具自动循环）；
+# 新版参数名是 system_prompt（旧版叫 prompt）；防死循环护栏 recursion_limit 改在调用时传（见 11.6 分支的 config）
+lg_graph = create_react_agent(lc_llm, [search_knowledge_base_lc], system_prompt=GRAPH_SYSTEM)
 
 
 def extract_text(content: bytes, ext: str) -> str:
@@ -167,8 +186,60 @@ async def chat(req: ChatRequest):
     """流式对话接口（第 7 步：Tool Calling 版；SSE 事件：tool / sources / token / error / done）"""
     messages = req.messages
 
+    # ===== LangGraph 分支（USE_LANGGRAPH = True 时接管，第 8 步新主力）=====
+    if USE_LANGGRAPH:
+        # 检索前先改写（修复“那餐补呢”查不到的问题）：“那餐补呢”距离 1.478 过不了 1.1 阈值，
+        # 改写成文档措辞后距离降到 0.398——第 7 步模型自主改写的能力在“代码先检索”架构里丢了，这里补回；
+        # 带最近几轮历史解决多轮指代（“那它呢”），失败就用原话兜底，绝不阻断主流程（一次短调用的成本）
+        try:
+            rewrite = client.chat.completions.create(
+                model="deepseek-v4-flash",
+                messages=[{"role": "system", "content": "结合对话历史，把用户最新问题改写成一句独立完整的检索语句（贴近知识库文档措辞）。只输出检索语句本身，不要解释。"}] + messages[-4:],
+            )
+            rewritten = (rewrite.choices[0].message.content or "").strip()
+        except Exception:
+            rewritten = ""
+        query = rewritten or messages[-1]["content"]
+        print(f"[LangGraph 检索] 原话: {messages[-1]['content']} → 改写: {query}")  # 观察点：后端终端看改写效果
+        hits = search_knowledge_base(query)  # 代码先检索：卡片先出场、未命中自然回应可控（设计取舍见 11.3）
+        sources = []
+        context_parts = []
+        seen = set()
+        for doc, meta in hits:  # 去重逻辑与手写版完全一致（第 6 步的活儿一行不丢）
+            key = (meta.get("filename"), doc)
+            if key in seen:
+                continue
+            seen.add(key)
+            sources.append({"id": len(sources) + 1, "filename": meta.get("filename", "未知来源"), "snippet": doc})
+            context_parts.append(f"[{len(sources)}] (来自: {meta.get('filename', '未知来源')})\n{doc}")
+        material = "\n\n".join(context_parts) if context_parts else "（无）"
+
+        async def generate():
+            # 注意必须是 async def：里面有 async for（消费 LangGraph 的异步流），普通 def 会报 SyntaxError；
+            # StreamingResponse 对异步生成器原生支持（手写版的同步生成器照常工作，互不影响）
+            # 卡片先发：顺序和第 6 步保持一致（先卡片后正文），前端零改动的前提
+            yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
+            # 组装本次对话：人格+规则 + 历史 + 编号资料 + 当前问题（检索结果以资料形式进提示词）
+            lg_messages = [{"role": "system", "content": GRAPH_SYSTEM}] + messages[:-1] + [
+                {"role": "user", "content": f"【编号资料】\n{material}\n\n【用户问题】\n{query}"}
+            ]
+            try:
+                # astream(stream_mode="messages")：模型每吐一个 token 就产出一条消息事件——全场景打字机的来源；
+                # 对照第 7 步：手写版只有“调工具路径”才有打字机，这里闲聊也有（11.1 遗憾 1 清算）；
+                # config 里的 recursion_limit=10 是防死循环护栏：最多转 10 圈强制熔断（新版 API 护栏在调用时传，不再在构图时传）
+                async for _chunk, metadata in lg_graph.astream(
+                        {"messages": lg_messages},
+                            config = {"recursion_limit": 10}, stream_mode = "messages"):
+                    if isinstance(_chunk, AIMessageChunk) and _chunk.content:
+                        yield f"event: token\ndata: {json.dumps({'content': _chunk.content}, ensure_ascii=False)}\n\n"
+            except Exception:
+                yield f"event: error\ndata: {json.dumps({'message': '模型服务暂时不可用，请稍后再试'}, ensure_ascii=False)}\n\n"
+            yield "event: done\ndata: {}\n\n"
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
     # ===== LangChain 分支（USE_LANGCHAIN = True 时接管：框架自动完成“决策-调用-回填”循环）=====
-    if USE_LANGCHAIN:
+    elif USE_LANGCHAIN:
         def generate():
             try:
                 result = lc_executor.invoke({
