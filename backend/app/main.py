@@ -11,6 +11,7 @@ import chromadb
 from pypdf import PdfReader
 import io
 import json
+import sys
 
 # langchain
 from langchain_openai import ChatOpenAI
@@ -21,6 +22,8 @@ from langchain_classic.agents import create_tool_calling_agent, AgentExecutor  #
 # langgraph 1.x 把 create_react_agent 标记弃用，新家：langchain.agents.create_agent（参数名见下方注释）
 from langchain.agents import create_agent as create_react_agent
 from langchain_core.messages import AIMessageChunk  # 流式过滤用：只把模型的正文块转给前端（11.6 的过滤器要它）
+
+from langchain_mcp_adapters.client import MultiServerMCPClient  # 第 9 步：把 MCP 工具转成 LangChain 工具
 
 load_dotenv()
 
@@ -111,6 +114,36 @@ def search_knowledge_base(query: str) -> list:
 # ===== 第 7 步：LangChain 版 Agent（对照实现）=====
 USE_LANGCHAIN = False  # 开关：默认 False 改成 True 后 /api/chat 由 LangChain Agent 接管，用来对比两版的行为差异
 USE_LANGGRAPH = True   # 第 8 步：新主力。优先级最高：True 时 /api/chat 由 LangGraph 接管（流式+卡片都有）
+USE_MCP = True           # 第 9 步：接入 MCP 工具（官方 fetch 联网抓取）。True 时牛来可以抓取网页；加载失败自动降级回普通图（12.9 坑 2）
+
+
+_mcp_client = None       # MCP 客户端（懒加载后常驻）
+_mcp_tools_cache = None  # MCP 工具缓存：None=没加载过，[]=加载失败，有值=加载成功（三种状态别混，12.9 坑 2）
+
+
+async def get_mcp_tools():
+    """MCP 工具加载器（方向 A）：懒加载+缓存，stdio 子进程只拉起一次（12.9 坑 5）；
+    失败给空列表降级，绝不阻断主流程（12.9 坑 2）"""
+    global _mcp_client, _mcp_tools_cache
+    if not USE_MCP:
+        return []
+    if _mcp_tools_cache is not None:
+        return _mcp_tools_cache
+    try:
+        _mcp_client = MultiServerMCPClient({
+            "fetch": {
+                "command": sys.executable,       # 用当前 venv 的 python，别写死路径（12.9 坑 1）
+                "args": ["-m", "mcp_server_fetch"],
+                "transport": "stdio",
+            }
+        })
+        async with _mcp_client.session("fetch"):
+            _mcp_tools_cache = await _mcp_client.get_tools()
+        print(f"[MCP] 已加载工具: {[t.name for t in _mcp_tools_cache]}")
+    except Exception as e:
+        print(f"[MCP] 加载失败，降级为普通模式: {e}")
+        _mcp_tools_cache = []
+    return _mcp_tools_cache
 
 
 # @tool 装饰器：把普通函数变成工具，工具描述直接从函数签名和 docstring 自动生成（手写版要写几十行 JSON）
@@ -148,7 +181,8 @@ GRAPH_SYSTEM = (
     "1. 用户提供【编号资料】时，只基于资料回答；引用了资料的句子末尾标注编号如[1][2]；资料没覆盖的就如实说明。\n"
     "2. 【编号资料】为空或和问题无关时，如实告知知识库中没有相关资料（不要调用工具，不要编造）。\n"
     "3. 用户的问题需要知识库里的事实、而【编号资料】显然没覆盖时，可以调用 search_knowledge_base 复核一次。\n"
-    "4. 与知识库无关的常识和闲聊，直接回答，不要调用工具。"
+    "4. 与知识库无关的常识和闲聊，直接回答，不要调用工具。\n"
+    "5. 用户需要实时网页内容（某个网页的信息、最新内容）时，调用 fetch 工具抓取后回答；知识库问题和闲聊不要调用它。"
 )
 # create_react_agent（实为新 API create_agent 的别名）= 预构建的 ReAct 图（思考⇄工具自动循环）；
 # 新版参数名是 system_prompt（旧版叫 prompt）；防死循环护栏 recursion_limit 改在调用时传（见 11.6 分支的 config）
@@ -201,6 +235,12 @@ async def chat(req: ChatRequest):
             rewritten = ""
         query = rewritten or messages[-1]["content"]
         print(f"[LangGraph 检索] 原话: {messages[-1]['content']} → 改写: {query}")  # 观察点：后端终端看改写效果
+
+        mcp_tools = await get_mcp_tools()
+        # MCP 工具和本地工具在同一个列表里进图——模型眼里它们没有区别（都是说明书三件套）
+        active_graph = create_react_agent(lc_llm, [search_knowledge_base_lc] + mcp_tools,
+                                          system_prompt=GRAPH_SYSTEM) if mcp_tools else lg_graph
+
         hits = search_knowledge_base(query)  # 代码先检索：卡片先出场、未命中自然回应可控（设计取舍见 11.3）
         sources = []
         context_parts = []
@@ -227,7 +267,7 @@ async def chat(req: ChatRequest):
                 # astream(stream_mode="messages")：模型每吐一个 token 就产出一条消息事件——全场景打字机的来源；
                 # 对照第 7 步：手写版只有“调工具路径”才有打字机，这里闲聊也有（11.1 遗憾 1 清算）；
                 # config 里的 recursion_limit=10 是防死循环护栏：最多转 10 圈强制熔断（新版 API 护栏在调用时传，不再在构图时传）
-                async for _chunk, metadata in lg_graph.astream(
+                async for _chunk, metadata in active_graph.astream(
                         {"messages": lg_messages},
                             config = {"recursion_limit": 10}, stream_mode = "messages"):
                     if isinstance(_chunk, AIMessageChunk) and _chunk.content:
