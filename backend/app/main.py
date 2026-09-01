@@ -132,13 +132,31 @@ async def get_mcp_tools():
     try:
         _mcp_client = MultiServerMCPClient({
             "fetch": {
-                "command": sys.executable,       # 用当前 venv 的 python，别写死路径（12.9 坑 1）
+                "command": sys.executable,  # 用当前 venv 的 python，别写死路径（12.9 坑 1）
                 "args": ["-m", "mcp_server_fetch"],
+                "transport": "stdio",
+            },
+            "weather": {  # 12.13 新增：Open-Meteo 天气 Server（免费、免 key）
+                "command": sys.executable,
+                "args": ["-m", "open_meteo_mcp"],
                 "transport": "stdio",
             }
         })
+        # 几个 Server 就要开几个会话（嵌套 with），开后 get_tools() 才能拿全（实测合计 9 个工具）
         async with _mcp_client.session("fetch"):
-            _mcp_tools_cache = await _mcp_client.get_tools()
+            async with _mcp_client.session("weather"):
+                all_tools = await _mcp_client.get_tools()
+        # 工具精简（12.13 核心设计点）：天气 Server 自带 8 个工具，
+        # 时区转换/空气质量类与模型自身能力重叠、徒增决策噪音，只留天气相关的 4 个 + fetch 本体（过滤后共 5 个）
+        _mcp_tools_cache = [
+            t for t in all_tools
+            if t.name == "fetch" or t.name in {
+                "get_current_weather",  # 当前天气：“北京现在天气怎么样”
+                "get_weather_byDateTimeRange",  # 日期范围预报：“明天天气怎么样”
+                "get_weather_details",  # 详细天气（含预报）：“给我份详细天气报告”
+                "get_current_datetime",  # 当前时间：模型算“明天”是哪天要靠它（所以没被精简掉）
+            }
+        ]
         print(f"[MCP] 已加载工具: {[t.name for t in _mcp_tools_cache]}")
     except Exception as e:
         print(f"[MCP] 加载失败，降级为普通模式: {e}")
@@ -182,7 +200,8 @@ GRAPH_SYSTEM = (
     "2. 【编号资料】为空或和问题无关时，如实告知知识库中没有相关资料（不要调用工具，不要编造）。\n"
     "3. 用户的问题需要知识库里的事实、而【编号资料】显然没覆盖时，可以调用 search_knowledge_base 复核一次。\n"
     "4. 与知识库无关的常识和闲聊，直接回答，不要调用工具。\n"
-    "5. 用户需要实时网页内容（某个网页的信息、最新内容）时，调用 fetch 工具抓取后回答；知识库问题和闲聊不要调用它。"
+    "5. 用户需要实时网页内容（某个网页的信息、最新内容）时，调用 fetch 工具抓取后回答；知识库问题和闲聊不要调用它。\n"
+    "6. 用户询问某城市的天气时，调用天气工具（城市名用英文或拼音，如 Beijing）；需要判断“明天”等相对日期时先调用 get_current_datetime；天气问题不要用 fetch。"
 )
 # create_react_agent（实为新 API create_agent 的别名）= 预构建的 ReAct 图（思考⇄工具自动循环）；
 # 新版参数名是 system_prompt（旧版叫 prompt）；防死循环护栏 recursion_limit 改在调用时传（见 11.6 分支的 config）
@@ -228,7 +247,7 @@ async def chat(req: ChatRequest):
         try:
             rewrite = client.chat.completions.create(
                 model="deepseek-v4-flash",
-                messages=[{"role": "system", "content": "结合对话历史，把用户最新问题改写成一句独立完整的检索语句（贴近知识库文档措辞）。只输出检索语句本身，不要解释。"}] + messages[-4:],
+                messages=[{"role": "system", "content": "结合对话历史，把用户最新问题改写成一句独立完整的检索语句（贴近知识库文档措辞）。只输出检索语句本身，不要解释。若最新问题不是知识库查询类问题（闲聊、创作、讲故事等），原样输出该问题，不要改写、不要回答它。"}] + messages[-4:],
             )
             rewritten = (rewrite.choices[0].message.content or "").strip()
         except Exception:
@@ -259,9 +278,13 @@ async def chat(req: ChatRequest):
             # StreamingResponse 对异步生成器原生支持（手写版的同步生成器照常工作，互不影响）
             # 卡片先发：顺序和第 6 步保持一致（先卡片后正文），前端零改动的前提
             yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
-            # 组装本次对话：人格+规则 + 历史 + 编号资料 + 当前问题（检索结果以资料形式进提示词）
+            # 组装本次对话：人格+规则 + 历史 + 编号资料 + 当前问题（检索结果以资料形式进提示词）；
+            # 【用户问题】必须用原话不能用改写句（query）：改写句是给检索用的小模型产物、输出不稳定，
+            # 闲聊类请求（如“给我讲个故事吧”）它可能直接编出一个故事，回灌给模型等于换了用户的问题
+            #（事故现场：牛来夸“亮哥这故事讲得真好”——它把改写模型编的故事当成了用户发的）；
+            # 指代（“那餐补呢”）不用愁：历史就在 messages[:-1] 里，模型自己解得开
             lg_messages = [{"role": "system", "content": GRAPH_SYSTEM}] + messages[:-1] + [
-                {"role": "user", "content": f"【编号资料】\n{material}\n\n【用户问题】\n{query}"}
+                {"role": "user", "content": f"【编号资料】\n{material}\n\n【用户问题】\n{messages[-1]['content']}"}
             ]
             try:
                 # astream(stream_mode="messages")：模型每吐一个 token 就产出一条消息事件——全场景打字机的来源；
@@ -404,17 +427,34 @@ async def upload(file: UploadFile = File(...)):
     if not chunks:
         raise HTTPException(status_code=400, detail="未能提取到文字，可能是图片型/扫描件文件，暂不支持")
 
-    # 5. 校验通过，才写盘（原逻辑不变）
+    # 5. 内容查重（10.13 新增）：指纹相同 = 内容完全一样，直接 409 拒收并告知已有文件名；
+    #    拦截发生在写盘之前，不留任何副作用（前端 !res.ok 分支会自动把 detail 弹给用户，零改动）
+    ids = [f"{content_hash}-{i}" for i in range(len(chunks))]
+    existing = collection.get(ids=ids, include=["metadatas"])
+    if existing["ids"]:
+        old_name = existing["metadatas"][0].get("filename", file.filename)
+        raise HTTPException(status_code=409,
+                            detail=f"该文件已上传，禁止重复上传（库中已有内容完全相同的文件：{old_name}）")
+
+    # 6. 同名覆盖（10.13 新增）：内容不同（指纹不同）但文件名相同 → 视为新版本，
+    #    先清旧版（切片+物理文件），杜绝新旧两版在检索里同场竞争
+    overwritten = False  # 前端靠它分流提示文案：新上传 vs 同名覆盖
+    old = collection.get(where={"filename": file.filename}, include=["metadatas"])
+    if old["ids"]:
+        old_saved = {m.get("saved_as") for m in old["metadatas"]}
+        collection.delete(ids=old["ids"])
+        cleanup_saved_files(old_saved)  # 切片已删，此时查引用才准（内部防误删共享文件）
+        overwritten = True
+        print(f"[覆盖] {file.filename} 旧版 {len(old['ids'])} 个切片已清理")
+
+    # 7. 校验通过，才写盘（原逻辑不变）
     save_name = f"{content_hash}{ext}"
     save_path = os.path.join(UPLOAD_DIR, save_name)
     with open(save_path, "wb") as f:
         f.write(content)
 
-    # 6. 入库知识库：
-    ids = [f"{content_hash}-{i}" for i in range(len(chunks))]
-    # 先查是不是已经入过库（只用于给前端返回提示，不影响去重逻辑）
-    duplicated = len(collection.get(ids=ids)["ids"]) > 0
-    # upsert = 存在则更新、不存在则插入；同一份文件传多少次结果都一样（幂等）
+    # 8. 入库知识库：upsert = 存在则更新、不存在则插入（重复内容已在第 5 步被 409 拦下，
+    #    走到这里的要么是全新文件，要么是已清掉旧版的同名新内容）
     collection.upsert(
         documents=chunks,
         ids=ids,
@@ -423,7 +463,7 @@ async def upload(file: UploadFile = File(...)):
     print(f"知识库切片总数: {collection.count()}")  # 验证观察点，打印在后端终端
 
     return {"filename": file.filename, "saved_as": save_name, "size": len(content),
-            "chunks": len(chunks), "duplicated": duplicated}
+            "chunks": len(chunks), "overwritten": overwritten}
 
 
 @app.get("/api/files")
@@ -439,14 +479,42 @@ async def list_files():
     return {"files": [{"filename": n, "chunks": c} for n, c in counter.items()]}
 
 
+def cleanup_saved_files(saved_names):
+    """清理 uploads/ 里不再被引用的物理文件（10.13 新增，覆盖/删除两条路共用）。
+    防误删：同一份内容可能以不同文件名传过（指纹相同、共享一个存盘文件），
+    必须等库里再没有任何切片引用这个 saved_as 时才删物理文件；
+    os.remove 包 try 防 Windows 文件占用导致 500，清理失败不阻断主流程"""
+    for name in saved_names:
+        if not name:
+            continue
+        if len(collection.get(where={"saved_as": name})["ids"]) == 0:
+            path = os.path.join(UPLOAD_DIR, name)
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError as e:
+                    print(f"[清理] 物理文件删除失败（不影响主流程）: {name} {e}")
+
+
+# 禁删名单：向量知识库的测试样本数据，只允许覆盖更新、不允许删除（10.13）；
+# 拦在后端而不是前端：后端是真相之源，绕过页面直接调 API 也删不掉
+PROTECTED_FILES = {"公司制度.txt"}
+
+
 @app.delete("/api/files/{filename}")
 async def delete_file(filename: str):
-    """从知识库删除文档：按元数据把该文档的所有切片批量删掉（入库时存的 filename 在此兑现）"""
+    """从知识库删除文档：切片 + uploads/ 物理文件一起清（10.13 前只删切片，物理文件成孤儿）"""
+    if filename in PROTECTED_FILES:
+        raise HTTPException(status_code=403,
+                            detail=f"「{filename}」是知识库的演示样本文件，不支持删除；需要更新内容时，上传同名文件即可自动覆盖旧版")
     before = collection.count()
+    data = collection.get(where={"filename": filename}, include=["metadatas"])  # 删前先捞 saved_as
+    saved_names = {m.get("saved_as") for m in data["metadatas"]}
     collection.delete(where={"filename": filename})  # where = 按元数据条件过滤删除
     deleted = before - collection.count()
     if deleted == 0:
         raise HTTPException(status_code=404, detail="知识库中没有这个文件")
+    cleanup_saved_files(saved_names)  # 切片已删，此时查引用才准
     print(f"知识库切片总数: {collection.count()}")
     return {"filename": filename, "deleted_chunks": deleted}
 

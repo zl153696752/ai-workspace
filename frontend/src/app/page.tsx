@@ -3,11 +3,14 @@ import { useEffect, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Bot,
+  BookOpen,
+  CloudSun,
   Download,
   CalendarDays,
   Check,
   Copy,
   FileText,
+  Globe,
   Hash,
   MessageSquare,
   Paperclip,
@@ -30,14 +33,16 @@ type Conversation = { id: string; title: string; messages: Msg[]; createdAt: num
 
 // localStorage 键名（第 3 期：会话持久化，刷新页面不丢）
 const LS_CONVS = "ai-workspace:conversations";
-const LS_ACTIVE = "ai-workspace:active";
 
-// 欢迎页推荐问题：点击直接发送，面试官零门槛体验核心功能
+// 欢迎页推荐问题：点击直接发送，面试官零门槛体验核心功能；
+// 6 条覆盖三大能力：知识库问答 ×3、天气查询 ×1（MCP）、网页抓取 ×1（MCP）、人格 ×1
 const SUGGESTIONS: { icon: LucideIcon; text: string }[] = [
   { icon: CalendarDays, text: "年假几天？" },
   { icon: Hash, text: "公司代号是什么？" },
-  { icon: Bot, text: "介绍下你自己" },
   { icon: UtensilsCrossed, text: "加班餐补怎么算？" },
+  { icon: CloudSun, text: "北京现在天气怎么样？" },
+  { icon: Globe, text: "帮我看看 example.com 页面的标题是什么" },
+  { icon: Bot, text: "介绍下你自己" },
 ];
 
 // AI 回答的 Markdown 排版（第 2 期：富文本渲染；用户消息仍用纯文本，不渲染）
@@ -86,13 +91,13 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null); // 停止生成用：中断 fetch 流
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // ===== 第 3 期：从 localStorage 恢复会话（只在首次挂载执行一次）=====
+  // ===== 第 3 期：从 localStorage 恢复会话历史（只在首次挂载执行一次）=====
+  // 注意：只恢复会话列表，不恢复“上次选中的会话”——打开页面永远落在新对话欢迎页
+  //（面试演示第一现场：谁来打开都先看到功能介绍和推荐问题；旧会话点左侧列表随时切回）
   useEffect(() => {
     try {
       const convs = localStorage.getItem(LS_CONVS);
       if (convs) setConversations(JSON.parse(convs));
-      const active = localStorage.getItem(LS_ACTIVE);
-      if (active) setActiveId(active === "null" ? null : active);
     } catch {
       // 数据损坏就当没有，从空白开始（不阻断页面）
     }
@@ -103,9 +108,6 @@ export default function Home() {
   useEffect(() => {
     if (hydrated) localStorage.setItem(LS_CONVS, JSON.stringify(conversations));
   }, [conversations, hydrated]);
-  useEffect(() => {
-    if (hydrated) localStorage.setItem(LS_ACTIVE, String(activeId));
-  }, [activeId, hydrated]);
 
   // 当前激活会话（派生值，不额外存状态，避免数据不一致）
   const active = conversations.find(c => c.id === activeId) ?? null;
@@ -321,7 +323,8 @@ export default function Home() {
       });
 
       if (!res.ok) {
-        // 后端返回的错误信息，比如“不支持的文件类型”；响应体异常时兜底默认文案，绝不静默
+        // 后端返回的错误信息：409 重复上传（“该文件已上传，禁止重复上传…”）、400 类型/大小/解析问题等；
+        // 响应体异常时兜底默认文案，绝不静默
         let detail = "上传失败，请稍后再试";
         try {
           const err = await res.json();
@@ -331,7 +334,18 @@ export default function Home() {
         }
         alert(detail);
       } else {
+        // 成功也要有声音：后端用 overwritten 标志区分“全新上传”和“同名覆盖”（10.13）
+        let okMsg = "上传成功";
+        try {
+          const data = await res.json();
+          okMsg = data.overwritten
+            ? `同名文件覆盖成功：${data.filename}（旧版已清理，新版共 ${data.chunks} 个切片）`
+            : `上传成功：${data.filename}（共 ${data.chunks} 个切片）`;
+        } catch {
+          // 响应体解析失败不影响主流程，用兜底文案
+        }
         await loadFiles(); // 上传成功后重新拉后端清单（含新文件的切片数）
+        alert(okMsg);
       }
     } catch {
       alert("上传失败：无法连接后端服务，请确认后端已启动");
@@ -545,26 +559,62 @@ export default function Home() {
       {/* ===== 主区域 ===== */}
       <main className="flex-1 flex flex-col min-w-0">
         {messages.length === 0 ? (
-          /* --- 欢迎页 --- */
-          <div className="flex-1 flex flex-col items-center justify-center px-6 pb-20">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#4d6bfe] to-[#7c93ff] flex items-center justify-center shadow-lg shadow-blue-100">
-              <Sparkles className="w-7 h-7 text-white" />
-            </div>
-            <h1 className="mt-5 text-[22px] font-medium">嗨，我是知识库助手</h1>
-            <p className="mt-2 text-sm text-gray-400">
-              在左侧上传企业文档后向我提问，回答将标注来源
-            </p>
-            <div className="grid grid-cols-2 gap-3 mt-9 w-full max-w-[560px]">
-              {SUGGESTIONS.map(({ icon: Icon, text }) => (
-                <button
-                  key={text}
-                  onClick={() => sendMessage(text)}
-                  className="flex items-center gap-2.5 px-4 py-3.5 rounded-xl border border-gray-200 text-sm text-gray-600 text-left hover:border-[#4d6bfe] hover:text-[#4d6bfe] hover:bg-[#f5f7ff] transition-colors"
-                >
-                  <Icon className="w-4 h-4 shrink-0" />
-                  {text}
-                </button>
-              ))}
+          /* --- 欢迎页（默认新对话：给面试官的功能广告位，三大能力一目了然） --- */
+          <div className="flex-1 flex flex-col overflow-y-auto px-6">
+            {/* 外层是 flex-col，m-auto 才能真正垂直居中；内容超出时从顶部开始可滚动，两头都不难受 */}
+            <div className="m-auto max-w-[680px] flex flex-col items-center py-10 w-full">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#4d6bfe] to-[#7c93ff] flex items-center justify-center shadow-lg shadow-blue-100">
+                <Sparkles className="w-7 h-7 text-white" />
+              </div>
+              <h1 className="mt-5 text-[22px] font-medium">嗨，我是牛来</h1>
+              <p className="mt-2 text-sm text-gray-400 text-center leading-6 max-w-[520px]">
+                一个能查知识库、也能联网的 AI 工作区：基于企业文档回答并标注来源，
+                实时抓取网页内容，还能查询任意城市的天气
+              </p>
+
+              {/* 能力卡片：RAG / MCP 这些术语故意保留，给面试官看的；窄窗口降为单列，不压扁卡片 */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-8 w-full">
+                <div className="px-4 py-3.5 rounded-xl border border-gray-200 bg-white">
+                  <div className="flex items-center gap-2 text-sm font-medium text-gray-800">
+                    <BookOpen className="w-4 h-4 text-[#4d6bfe]" />
+                    知识库问答
+                  </div>
+                  <p className="mt-1.5 text-xs text-gray-400 leading-5">
+                    上传企业文档检索增强（RAG），回答带编号引用，来源卡片可展开核对、下载原文
+                  </p>
+                </div>
+                <div className="px-4 py-3.5 rounded-xl border border-gray-200 bg-white">
+                  <div className="flex items-center gap-2 text-sm font-medium text-gray-800">
+                    <CloudSun className="w-4 h-4 text-[#4d6bfe]" />
+                    天气查询
+                  </div>
+                  <p className="mt-1.5 text-xs text-gray-400 leading-5">
+                    问任意城市当前或未来天气，MCP 协议接入 Open-Meteo，真实数据不编造
+                  </p>
+                </div>
+                <div className="px-4 py-3.5 rounded-xl border border-gray-200 bg-white">
+                  <div className="flex items-center gap-2 text-sm font-medium text-gray-800">
+                    <Globe className="w-4 h-4 text-[#4d6bfe]" />
+                    网页抓取
+                  </div>
+                  <p className="mt-1.5 text-xs text-gray-400 leading-5">
+                    给一个网址，实时抓取页面内容后回答，MCP 协议接入官方 fetch 服务
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 mt-5 w-full max-w-[560px]">
+                {SUGGESTIONS.map(({ icon: Icon, text }) => (
+                  <button
+                    key={text}
+                    onClick={() => sendMessage(text)}
+                    className="flex items-center gap-2.5 px-4 py-3.5 rounded-xl border border-gray-200 text-sm text-gray-600 text-left hover:border-[#4d6bfe] hover:text-[#4d6bfe] hover:bg-[#f5f7ff] transition-colors"
+                  >
+                    <Icon className="w-4 h-4 shrink-0" />
+                    {text}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         ) : (
