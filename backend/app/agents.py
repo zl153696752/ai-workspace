@@ -9,7 +9,9 @@
 #   1. TOOLS                —— 手写版：自己写工具说明书 JSON，自己写调用循环（循环代码在 main.py）
 #   2. lc_agent/lc_executor  —— LangChain 版：框架接管“决定→执行→回填”整个循环
 #   3. lg_graph              —— LangGraph 版：图结构编排，支持流式逐字输出（当前主力）
-# 另外还有一件事：MCP 外部工具加载器 get_mcp_tools，把外部进程提供的工具接进来给模型用。
+# 另外还有两件事：
+#   MCP 外部工具加载器 get_mcp_tools —— 把外部进程提供的工具接进来给模型用；
+#   技能包工具 load_skill —— 把 backend/skills/ 下的操作手册按需喂给模型（Skill 机制，原理见 skills.py）。
 import os   # 读环境变量（API 密钥）
 import sys  # 用 sys.executable 拿当前 Python 解释器的路径（启动 MCP 子进程要用）
 
@@ -34,6 +36,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from .config import USE_MCP                    # MCP 总开关
 from .rag import search_knowledge_base         # 真正的检索能力（三套 Agent 共用同一个）
+from . import skills                           # 技能包加载器：提供技能清单（list_skills）和正文读取（load_skill）
 
 # ===== 助手人格设定 =====
 # 这是“身份层”提示词：每次对话都无条件放进 system 消息，与知识库检索结果无关。
@@ -186,6 +189,24 @@ def search_knowledge_base_lc(query: str) -> str:
     return "\n\n".join(parts)   # enumerate 同时拿到下标 i 和元素，i + 1 让编号从 1 开始（人看着习惯）
 
 
+# ===== 技能包工具（Skill 渐进式披露的第二层）=====
+# 和上面的知识库工具分工不同，两者提供的是两类东西：
+#   search_knowledge_base 提供“事实”——知识库文档里写了什么（年假几天、餐补多少）；
+#   load_skill           提供“章法”——某类任务该按什么步骤和标准来做（产品怎么用、文档怎么写）。
+# 这个分工正好对应 Agent 生态里的两个标准：MCP/Tool 管能力接入，Skill 管做事方法。
+#
+# 为什么把“加载手册”做成一个工具，而不是直接把手册全文塞进系统提示词：
+#   手册正文上千 token，塞进去的话每次请求都得付这笔钱（哪怕用户只是说“你好”），
+#   而且提示词越长模型注意力越涣散。做成工具后，常驻的只有一份技能清单（见下面 GRAPH_SYSTEM），
+#   模型判断“这问题得查手册”时才调本工具把正文拉进上下文——这就是渐进式披露。
+@langchain_tool
+def load_skill(skill_name: str) -> str:
+    """加载指定技能的完整操作手册。可用技能清单见系统提示词，skill_name 只能填清单里列出的名字。"""
+    # 本函数只是个壳：真正的目录扫描、白名单校验（防路径穿越）、缓存都在 skills.py 里。
+    # docstring 会被 @langchain_tool 自动当成工具说明书发给模型，所以措辞同样影响调用准确率。
+    return skills.load_skill(skill_name)
+
+
 # LangChain 版的模型客户端：和 config.py 里的 client 连的是同一个模型，
 # 只是 LangChain 要求用自己的封装类（ChatOpenAI）才能接入它的 Agent 体系。
 lc_llm = ChatOpenAI(
@@ -235,18 +256,52 @@ lc_executor = AgentExecutor(agent=lc_agent, tools=[search_knowledge_base_lc],
 #   规则 5：需要实时网页内容时用 fetch 工具（并限定场景，避免知识库问题也去联网）
 #   规则 6：天气问题走天气工具。两个细节必须写清：城市名用英文/拼音（天气服务的地理编码对中文支持不稳），
 #          以及遇到“明天”这类相对日期要先查当前时间（模型不知道今天是几号，算不出明天的日期）
+#   规则 7：问产品自身怎么用时去加载技能手册（不写这条，模型对“怎么上传文件”只能凭想象编）
+#
+# 加规则 7 时必须同步改规则 2 和规则 4，否则三条会打架：
+#   产品使用类问题在知识库里必然检索不到（库里放的是企业文档，不是产品说明书），
+#   而 LangGraph 分支是代码先检索、把结果写进【编号资料】的，查不到就是“（无）”；
+#   此时规则 2 原文的“如实告知没有相关资料（不要调用工具）”会把正经的产品问题挡回去，
+#   规则 4 原文的“与知识库无关的直接回答、不要调工具”也可能让模型把它归到闲聊里。
+#   所以两条都加了“产品使用类问题按规则 7 处理”的例外声明。
+#   教训和改写员那次一模一样：提示词只能影响输出概率、不能给模型上锁，
+#   规则之间不留明确的优先级和例外出口，模型就自己挑一条走。
+
+# ===== 技能清单（系统提示词里唯一的动态部分）=====
+# 模块加载时扫一次技能目录，把每个技能的 name + description 拼成清单常驻系统提示词。
+# 这是渐进式披露的第一层：只给“有哪些技能、分别什么时候用”，正文等模型调 load_skill 才给。
+# 好处：以后加新技能只要往 backend/skills/ 扔个文件夹，本文件一行代码都不用改。
+# 代价也要如实知道：技能多了这段清单会撑大系统提示词（每个技能约一两百 token），
+# 到几十个技能时就得改成“先按问题相关性筛选、再注入匹配上的那几个”，不能无脑全塞。
+_skill_list = skills.list_skills()
+_skill_menu = "".join(f"- {s['name']}：{s['description']}\n" for s in _skill_list)
+
 GRAPH_SYSTEM = (
     PERSONA + "\n\n回答规则：\n"
     "1. 用户提供【编号资料】时，只基于资料回答；引用了资料的句子末尾标注编号如[1][2]；资料没覆盖的就如实说明。\n"
-    "2. 【编号资料】为空或和问题无关时，如实告知知识库中没有相关资料（不要调用工具，不要编造）。\n"
+    "2. 【编号资料】为空或和问题无关时，如实告知知识库中没有相关资料（不要反复调用 search_knowledge_base，不要编造）；"
+    "但用户问的是本产品怎么用的情况按规则 7 处理。\n"
     "3. 用户的问题需要知识库里的事实、而【编号资料】显然没覆盖时，可以调用 search_knowledge_base 复核一次。\n"
-    "4. 与知识库无关的常识和闲聊，直接回答，不要调用工具。\n"
+    "4. 与知识库无关的常识和闲聊，直接回答，不要调用工具（询问本产品怎么用的除外，见规则 7）。\n"
     "5. 用户需要实时网页内容（某个网页的信息、最新内容）时，调用 fetch 工具抓取后回答；知识库问题和闲聊不要调用它。\n"
-    "6. 用户询问某城市的天气时，调用天气工具（城市名用英文或拼音，如 Beijing）；需要判断“明天”等相对日期时先调用 get_current_datetime；天气问题不要用 fetch。"
+    "6. 用户询问某城市的天气时，调用天气工具（城市名用英文或拼音，如 Beijing）；需要判断“明天”等相对日期时先调用 get_current_datetime；天气问题不要用 fetch。\n"
+    "7. 用户询问本产品自身怎么用时（如何上传/删除/下载文档、支持哪些格式和大小限制、为什么某个文件删不掉、"
+    "回答里的[1][2]编号和来源卡片是什么、界面上的按钮在哪、架构开关怎么切），"
+    "调用 load_skill(\"product-guide\") 取到产品手册，然后只按手册内容回答。"
+    "这类问题【编号资料】为空是完全正常的，不要因此回答\"知识库中没有相关资料\"。\n"
+    # 技能清单只在真扫到了技能时才拼进去，空清单不留一个空标题
+    + ("\n可用技能清单（load_skill 的 skill_name 只能填下面列出的名字）：\n" + _skill_menu if _skill_menu else "")
 )
 # 构建 LangGraph 图对象（模块加载时构建一次，之后所有请求复用）。
 # 参数：模型 + 工具列表 + 系统提示词（新版 API 的参数名是 system_prompt，旧版叫 prompt）。
-# 注意：这里的工具列表只有本地知识库工具。MCP 工具是异步加载的（要 await），模块导入阶段拿不到，
+# 工具列表里有两类：本地知识库工具（查事实）+ 技能包工具（取章法）。
+# MCP 工具是异步加载的（要 await），模块导入阶段拿不到，
 # 所以 main.py 里在 MCP 加载成功后会现场再构建一张带 MCP 工具的图；加载失败就用下面这张。
 # 防死循环护栏 recursion_limit 不在这里传，而是在每次调用时通过 config 传（新版 API 的规定，见 main.py）。
-lg_graph = create_react_agent(lc_llm, [search_knowledge_base_lc], system_prompt=GRAPH_SYSTEM)
+#
+# 已知局限（如实记录）：技能包工具只在 LangGraph 版生效，另两套实现没接：
+#   手写版的循环写死了 call = tool_calls[0]（只取第一个工具），支持多工具要把那里改成循环处理，
+#   为一个学习用的对照分支动核心循环不值得；
+#   LangChain 版的提示词模板用的是 PERSONA（不含上面那七条规则），即使把工具加进去也不会被触发。
+#   而 LangGraph 版就是当前主力和演示用的那套，所以只改它，改动面最小。
+lg_graph = create_react_agent(lc_llm, [search_knowledge_base_lc, load_skill], system_prompt=GRAPH_SYSTEM)

@@ -25,7 +25,7 @@ from .config import (client, collection, UPLOAD_DIR, ALLOWED_EXT, MAX_FILE_SIZE,
                      USE_LANGCHAIN, USE_LANGGRAPH)
 from .rag import search_knowledge_base, extract_text, split_text
 from .agents import (PERSONA, TOOLS, GRAPH_SYSTEM, get_mcp_tools, search_knowledge_base_lc,
-                     lc_llm, lc_executor, lg_graph)
+                     lc_llm, lc_executor, lg_graph, load_skill)
 
 app = FastAPI(title="AI Workspace")   # title 会显示在自动生成的接口文档页（启动后访问 /docs）上
 
@@ -107,10 +107,13 @@ async def chat(req: ChatRequest):
 
         # ----- 第 2 步：加载 MCP 外部工具，决定本次用哪张图 -----
         mcp_tools = await get_mcp_tools()   # await：异步等待加载结果（首次会拉子进程，之后直接读缓存）
-        # MCP 工具（网页抓取、天气）和本地工具（知识库检索）放进同一个列表交给图——
+        # MCP 工具（网页抓取、天气）和本地工具（知识库检索、技能包加载）放进同一个列表交给图——
         # 在模型眼里它们没有任何区别，都是“一份工具说明书”，模型只看说明决定用哪个。
         # 加载成功就现场重建一张带全部工具的图；加载失败（返回 []）就复用 agents.py 里预建的普通图。
-        active_graph = create_react_agent(lc_llm, [search_knowledge_base_lc] + mcp_tools,
+        # load_skill 在这里必须一并带上：预建的 lg_graph 里有它，重建时漏掉的话，
+        # MCP 加载成功（也就是正常情况）反而会让技能功能失效，
+        # 而且不报错——只是模型拿不到这个工具，产品问题又变回“知识库里没有相关资料”。
+        active_graph = create_react_agent(lc_llm, [search_knowledge_base_lc, load_skill] + mcp_tools,
                                           system_prompt=GRAPH_SYSTEM) if mcp_tools else lg_graph
 
         # ----- 第 3 步：代码先检索，把结果整理成编号资料（给模型）+ 引用卡片（给前端）-----
