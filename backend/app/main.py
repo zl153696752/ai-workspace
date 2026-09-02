@@ -9,6 +9,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 # HTTPException：抛出带状态码的错误，FastAPI 会自动把它转成 {"detail": "错误文案"} 的 JSON 响应
 from fastapi.middleware.cors import CORSMiddleware   # 跨域中间件（解决前端域名/端口与后端不同时浏览器的拦截）
 from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles   # 托管前端静态导出产物（见文件末尾）
 # StreamingResponse：流式响应，打字机效果靠它；FileResponse：直接把磁盘文件作为响应体返回，供下载
 from pydantic import BaseModel   # 请求体校验：定义好字段和类型，FastAPI 自动校验并生成接口文档
 # 只有 MCP 工具加载成功时，才需要现场重建一张带 MCP 工具的图，所以这里也要能拿到构图函数
@@ -29,15 +30,39 @@ from .agents import (PERSONA, TOOLS, GRAPH_SYSTEM, get_mcp_tools, search_knowled
 
 app = FastAPI(title="AI Workspace")   # title 会显示在自动生成的接口文档页（启动后访问 /docs）上
 
-# 跨域配置：浏览器默认禁止 localhost:3000（前端）的页面请求 localhost:8000（后端），
-# 因为端口不同就算跨域，请求会被浏览器拦下。后端必须显式声明“允许这个来源访问”，前端才能拿到响应。
-# 上线后这里要换成真实域名。
+# 跳域配置：浏览器默认禁止 localhost:3000（前端）的页面请求 localhost:8000（后端），
+# 因为端口不同就算跳域，请求会被浏览器拦下。后端必须显式声明“允许这个来源访问”，前端才能拿到响应。
+#
+# 白名单从环境变量读，本地开发不配就用默认值，线上要放行别的来源时配 CORS_ORIGINS 即可。
+# 【线上其实用不到】13.3.1 定的同源方案下，前端页面和 API 是同一个 origin，
+# 浏览器根本不会触发跳域检查。这段保留是为了本地开发（3000 → 8000 确实跳域）。
+# 格式：多个来源用英文逗号分隔，如 CORS_ORIGINS="http://a.com,http://b.com"
+_cors_env = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # 白名单：只允许前端开发服务器的地址
+    allow_origins=[o.strip() for o in _cors_env.split(",") if o.strip()],
     allow_methods=["*"],   # 允许所有 HTTP 方法（GET / POST / DELETE ...）
     allow_headers=["*"],   # 允许所有请求头
 )
+
+
+@app.get("/health")
+async def health():
+    """健康检查接口：部署平台靠它判断容器活没活。
+
+    为什么要单独做一个：平台会定期探一下这个地址，探不通就认为容器挂了、
+    然后反复重启它。如果拿 /api/chat 当探活目标，每次探活都会真的去调一次大模型，
+    既烧 token 又慢，还会因为模型超时而误判成“容器挂了”。
+    所以探活接口必须【轻】：不碰模型、不碰网络，只报告自己和数据库的状态。
+
+    返回的 chroma_chunks 顺便当“知识库空没空”的自检：
+    部署完第一件事就是打开 /health 看这个数字，是 0 说明种子文档没灌进去（见 13.3.9）。
+    """
+    return {
+        "status": "ok",
+        "chroma_chunks": collection.count(),   # 知识库里的切片总数，0 = 空库
+        "uploads_dir_ok": os.path.isdir(UPLOAD_DIR),
+    }
 
 
 class ChatRequest(BaseModel):
@@ -563,3 +588,23 @@ async def download_file(filename: str):
     # filename 参数指定浏览器保存时用的名字 = 用户最初上传的原文件名（中文名会自动做 URL 编码），
     # 不传的话浏览器会用 URL 末段或哈希名保存，用户看不懂。
     return FileResponse(file_path, filename=filename)
+
+
+# ===== 托管前端静态文件（必须放在本文件最末尾）=====
+# 13.3.1 定的同源方案：前端 next build 静态导出到 frontend/out/，
+# 由这个 FastAPI 进程一起托管，最终一个容器一个端口，CORS 问题彻底消失。
+#
+# 为什么必须在所有 @app.xxx 路由之后：Starlette 按注册顺序匹配，
+# mount("/") 是个“兜住所有剩余请求”的通配挂载，放在前面会把 /api/chat 之类的请求全吞掉。
+#
+# html=True 的作用：访问目录时自动返回该目录下的 index.html（访问 / 返回 /index.html）。
+#
+# 为什么套一层 if os.path.isdir：本地开发时前端是 next dev 单独跑在 3000 的，
+# 根本没有 frontend_out 目录。不套这个判断，本地启动就会因为找不到目录而报错。
+# 目录不存在时静默跳过，API 照常工作 —— 这样同一份代码在本地和线上都能跑。
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend_out")
+if os.path.isdir(FRONTEND_DIR):
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+    print(f"[前端托管] 已挂载静态文件目录: {os.path.abspath(FRONTEND_DIR)}")
+else:
+    print("[前端托管] 未找到 frontend_out 目录，跳过挂载（本地开发属正常情况）")

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 // ===== 页面入口（12.15 模块化拆分后，这个文件只剩两类事）=====
 // ① 业务编排：sendMessage（SSE 流式消费）、停止生成、新对话；② 组装组件树
 // 会话持久化在 hooks/useConversations，知识库文件管理在 hooks/useKnowledgeFiles，
@@ -11,6 +11,7 @@ import Welcome from "@/components/Welcome";
 import { useConversations } from "@/hooks/useConversations";
 import { useKnowledgeFiles } from "@/hooks/useKnowledgeFiles";
 import type { Conversation, Msg } from "@/types";
+import { API_BASE } from "@/lib/api";
 
 export default function Home() {
   const [input, setInput] = useState("");
@@ -65,7 +66,7 @@ export default function Home() {
     );
 
     try {
-      const response = await fetch("http://localhost:8000/api/chat", {
+      const response = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: history }), // 发包含本句话的完整历史

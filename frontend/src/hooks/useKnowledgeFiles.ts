@@ -3,6 +3,7 @@
 // 原则不变：后端是真相之源，清单从 Chroma 元数据聚合，前端不做本地记录
 import { useEffect, useState } from "react";
 import type { KbFile } from "@/types";
+import { API_BASE } from "@/lib/api";
 
 export function useKnowledgeFiles() {
   const [files, setFiles] = useState<KbFile[]>([]); // 知识库文件清单（来自后端，非本地记录）
@@ -10,7 +11,7 @@ export function useKnowledgeFiles() {
 
   const loadFiles = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/files");
+      const res = await fetch(`${API_BASE}/api/files`);
       if (res.ok) setFiles((await res.json()).files);
     } catch {
       // 后端没启动时清单保持为空，不阻断页面
@@ -37,7 +38,7 @@ export function useKnowledgeFiles() {
     formData.append("file", file); // "file" 这个名字要和后端 UploadFile 的参数名一致
 
     try {
-      const res = await fetch("http://localhost:8000/api/upload", {
+      const res = await fetch(`${API_BASE}/api/upload`, {
         method: "POST",
         body: formData, // ⚠️ 注意：发 FormData 千万不要手动设置 Content-Type！
       });
@@ -78,7 +79,7 @@ export function useKnowledgeFiles() {
   const deleteFile = async (filename: string) => {
     if (!window.confirm(`确定把「${filename}」从知识库删除吗？相关切片会一并删除。`)) return;
     try {
-      const res = await fetch(`http://localhost:8000/api/files/${encodeURIComponent(filename)}`, {
+      const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`, {
         method: "DELETE",
       });
       if (!res.ok) {
@@ -96,7 +97,7 @@ export function useKnowledgeFiles() {
   // 改用 fetch + blob：成功才触发下载，失败把后端 detail 弹出来，页面纹丝不动（与第 6.5 步错误提示原则一致）
   const downloadFile = async (filename: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/files/${encodeURIComponent(filename)}/download`);
+      const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}/download`);
       if (!res.ok) {
         let detail = "下载失败";
         try {

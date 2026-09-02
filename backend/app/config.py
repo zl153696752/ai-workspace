@@ -32,7 +32,10 @@ client = OpenAI(
 # os.path.dirname(__file__) 是本文件所在目录（backend/app），接 ".." 退回 backend，
 # 最终拼出 backend/uploads/ ——用户上传的原文件实体就存在这个目录（存的是磁盘文件，不是向量）。
 # 用 __file__ 推导路径而不是写死 "E:/ai-workspace/..."：项目挪到任何机器、任何盘符都能正常跑。
-UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "uploads")
+# 数据根目录：默认跟代码放在一起（本地开发），线上可用环境变量 DATA_DIR 指到别处。
+# 为什么留这个活口：见 13.0.1 表 C 的「磁盘是否跨重启持久」未验证项。
+DATA_DIR = os.getenv("DATA_DIR") or os.path.join(os.path.dirname(__file__), "..")
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)  # 目录不存在就创建；exist_ok=True 表示已存在也不报错（否则服务第二次启动就崩）
 ALLOWED_EXT = [".txt", ".md", ".pdf"]   # 上传白名单：只收这三种后缀，其余格式（如 .docx）后端没有解析能力，在接口层直接拒掉
 MAX_FILE_SIZE = 5 * 1024 * 1024         # 单文件上限 5MB（5 * 1024 * 1024 字节）。为什么必须拦：入库流程（提取文字→切片→算向量）
@@ -50,7 +53,7 @@ MAX_TEXT_LENGTH = 300000                # 提取后的文字量上限 30 万字�
 #   也能命中写着“员工每年享有带薪休假 5 天”的文档，哪怕一个关键词都不重合。
 # PersistentClient = 数据持久化到磁盘目录（backend/chroma_db/），服务重启数据还在。
 # 与之相对的 EphemeralClient 只存在内存里，进程一退数据全没（仅适合写测试）。
-chroma_client = chromadb.PersistentClient(path=os.path.join(os.path.dirname(__file__), "..", "chroma_db"))
+chroma_client = chromadb.PersistentClient(path=os.path.join(DATA_DIR, "chroma_db"))
 # collection 相当于关系型数据库里的“一张表”：所有知识库切片都存在名为 knowledge 的这一张表里。
 # get_or_create_collection：第一次运行时自动建表，之后运行直接拿到已有数据，不需要手动初始化。
 collection = chroma_client.get_or_create_collection(name="knowledge")
