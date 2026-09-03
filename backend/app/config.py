@@ -11,6 +11,7 @@ import os
 from dotenv import load_dotenv   # 读取 .env 配置文件的第三方库
 from openai import OpenAI       # OpenAI 官方 SDK，用它连 DeepSeek（原因见下）
 import chromadb                 # 向量数据库 Chroma 的客户端库
+from .embeddings_bge import BgeZhEF   # 自己写的中文嵌入模型（为什么不用 Chroma 自带的，见 embeddings_bge.py 文件头）
 
 # 读取 backend/.env 文件里的键值对（本项目里主要是 DEEPSEEK_API_KEY），写进程序的环境变量。
 # 两个要点：
@@ -56,7 +57,7 @@ MAX_TEXT_LENGTH = 300000                # 提取后的文字量上限 30 万字�
 chroma_client = chromadb.PersistentClient(path=os.path.join(DATA_DIR, "chroma_db"))
 # collection 相当于关系型数据库里的“一张表”：所有知识库切片都存在名为 knowledge 的这一张表里。
 # get_or_create_collection：第一次运行时自动建表，之后运行直接拿到已有数据，不需要手动初始化。
-collection = chroma_client.get_or_create_collection(name="knowledge")
+collection = chroma_client.get_or_create_collection(name="knowledge", embedding_function=BgeZhEF())
 
 # ===== 切片参数 =====
 # 为什么要切片，而不是整篇文档存一条：
