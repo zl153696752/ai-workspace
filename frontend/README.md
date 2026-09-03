@@ -1,36 +1,30 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 前端（Next.js）
 
-## Getting Started
+> 项目总说明在[仓库根目录的 README](../README.md)，这里只写本地开发相关的。
 
-First, run the development server:
+## 本地开发
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
+```powershell
+pnpm install
 pnpm dev
-# or
-bun dev
+# → http://localhost:3000（后端要同时在 8000 端口跑着）
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 构建静态产物
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```powershell
+pnpm build
+# 产出在 out/ 目录（next.config.ts 里设了 output: "export"）
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+线上部署时 `out/` 的内容会被拷进 Docker 镜像、由后端 FastAPI 托管，所以生产环境**不需要 Node 进程**。
 
-## Learn More
+## 目录
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| 路径 | 作用 |
+| --- | --- |
+| `src/app/page.tsx` | 页面：业务编排 |
+| `src/components/` | Sidebar / Welcome / MessageList / ChatInput |
+| `src/hooks/` | useConversations / useKnowledgeFiles |
+| `src/lib/api.ts` | API 基地址（开发/生产自动切换） |
+| `src/types.ts` | 共享类型 |
