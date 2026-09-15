@@ -1,14 +1,13 @@
 "use client";
-// ===== 对话流组件（12.15 模块化拆分：从 page.tsx 抽出）=====
-// 消息气泡、Markdown 渲染、引用卡片、复制按钮都在这；贴底滚动逻辑也归它管
-//（滚动是这个组件自己的事：监听、状态、refs 全在内部，页面不用关心）
+// ===== 对话流组件 =====
+// 消息气泡、Markdown 渲染、引用卡片、复制按钮都在这；贴底滚动逻辑（监听/状态/refs）也归它管。
 import { useEffect, useRef, useState } from "react";
 import { Check, Copy, FileText, Sparkles } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import type { Msg } from "@/types";
 
-// AI 回答的 Markdown 排版（第 2 期：富文本渲染；用户消息仍用纯文本，不渲染）
+// AI 回答的 Markdown 排版（用户消息仍用纯文本，不渲染）
 const mdComponents: Components = {
   p: ({ children }) => <p className="mb-2.5 leading-7 last:mb-0">{children}</p>,
   h1: ({ children }) => <h1 className="mt-4 mb-2 text-lg font-semibold first:mt-0">{children}</h1>,
@@ -49,9 +48,9 @@ export default function MessageList({ messages, loading, activeId }: MessageList
   const [copiedKey, setCopiedKey] = useState<string | null>(null); // 刚复制成功的 AI 消息（显示“已复制”反馈用）
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const stickRef = useRef(true); // 是否贴底：用户往上滚去看旧内容时置为 false，输出就不劫持滚动
+  const stickRef = useRef(true); // 是否贴底：用户往上翻看时置 false，输出就不劫持滚动
 
-  // 新消息到达时自动滚动到底部（仅当用户贴底时；往上翻看时不劫持滚动，第 4 期）
+  // 新消息到达时自动滚到底部（仅当用户贴底时；往上翻看则不劫持）
   useEffect(() => {
     if (stickRef.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -61,13 +60,13 @@ export default function MessageList({ messages, loading, activeId }: MessageList
     stickRef.current = true;
   }, [activeId]);
 
-  // 滚动监听：距底部 80px 以内算“贴底”（第 4 期）
+  // 滚动监听：距底部 80px 以内算“贴底”
   const handleScroll = () => {
     const el = scrollRef.current;
     if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
-  // 第 4 期：复制 AI 回答（成功后显示“已复制”反馈 2 秒）
+  // 复制 AI 回答（成功后显示“已复制”反馈 2 秒）
   const copyMessage = async (text: string, key: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -107,8 +106,8 @@ export default function MessageList({ messages, loading, activeId }: MessageList
                     ))}
                   </div>
                 ) : (
-                  /* Markdown 渲染：加粗/列表/代码块等语法正常显示（第 2 期）；
-                     remarkBreaks：模型输出的单个换行也当换行处理，不粘连成一段 */
+                  /* Markdown 渲染：加粗/列表/代码块等语法正常显示；
+                     remarkBreaks：单个换行也当换行处理，不粘连成一段 */
                   <div className="text-sm text-gray-800">
                     <ReactMarkdown remarkPlugins={[remarkBreaks]} components={mdComponents}>
                       {msg.content}
@@ -137,7 +136,7 @@ export default function MessageList({ messages, loading, activeId }: MessageList
                   </div>
                 )}
 
-                {/* 第 4 期：复制按钮（悬停消息浮现；正在流式输出的那条不显示）*/}
+                {/* 复制按钮（悬停浮现；正在流式输出的那条不显示）*/}
                 {msg.content && !(loading && i === messages.length - 1) && (
                   <button
                     onClick={() => copyMessage(msg.content, `${activeId}-${i}`)}

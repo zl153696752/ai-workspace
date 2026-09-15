@@ -10,3 +10,6 @@ chroma_db/
 frontend_out/
 _probe_modelscope/
 _deploy/
+# 重排模型体积大（279MB，超 GitHub 单文件 100MB 限制），不纳入 git。
+# 下载方式见 docs/企业级改造方案.md 步骤 1（官方源/镜像源直链）。
+backend/app/models/bge-reranker-base/

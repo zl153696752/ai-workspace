@@ -1,6 +1,6 @@
 "use client";
-// ===== 欢迎页组件（12.15 模块化拆分：从 page.tsx 抽出，12.14 的功能广告位）=====
-// 默认新对话时展示：三大能力卡片 + 6 条推荐问题，点一下就是演示
+// ===== 欢迎页组件 =====
+// 新对话时展示：三大能力卡片 + 6 条推荐问题，点一下即演示。
 import type { LucideIcon } from "lucide-react";
 import {
   Bot,
@@ -13,8 +13,7 @@ import {
   UtensilsCrossed,
 } from "lucide-react";
 
-// 欢迎页推荐问题：点击直接发送，面试官零门槛体验核心功能；
-// 6 条覆盖三大能力：知识库问答 ×3、天气查询 ×1（MCP）、网页抓取 ×1（MCP）、人格 ×1
+// 推荐问题：点击直接发送；6 条覆盖三大能力（知识库问答 ×3、天气 ×1、网页抓取 ×1、人格 ×1）。
 const SUGGESTIONS: { icon: LucideIcon; text: string }[] = [
   { icon: CalendarDays, text: "年假几天？" },
   { icon: Hash, text: "公司代号是什么？" },
@@ -31,7 +30,7 @@ type WelcomeProps = {
 export default function Welcome({ onSend }: WelcomeProps) {
   return (
     <div className="flex-1 flex flex-col overflow-y-auto px-6">
-      {/* 外层是 flex-col，m-auto 才能真正垂直居中；内容超出时从顶部开始可滚动，两头都不难受 */}
+      {/* 外层 flex-col + m-auto 实现垂直居中；内容超出时从顶部可滚动 */}
       <div className="m-auto max-w-[680px] flex flex-col items-center py-10 w-full">
         <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#4d6bfe] to-[#7c93ff] flex items-center justify-center shadow-lg shadow-blue-100">
           <Sparkles className="w-7 h-7 text-white" />
@@ -42,7 +41,7 @@ export default function Welcome({ onSend }: WelcomeProps) {
           实时抓取网页内容，还能查询任意城市的天气
         </p>
 
-        {/* 能力卡片：RAG / MCP 这些术语故意保留，给面试官看的；窄窗口降为单列，不压扁卡片 */}
+        {/* 能力卡片：RAG/MCP 术语故意保留给面试官看；窄窗口降为单列 */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-8 w-full">
           <div className="px-4 py-3.5 rounded-xl border border-gray-200 bg-white">
             <div className="flex items-center gap-2 text-sm font-medium text-gray-800">

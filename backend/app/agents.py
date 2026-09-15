@@ -1,49 +1,32 @@
 # ===== Agent 定义（模型编排层）=====
-# 先搞清一个词：Agent（智能体）= 能自己决定“要不要用工具、用哪个工具”的大模型应用。
-#   普通模型调用是“问一句答一句”；
-#   Agent 是模型看完问题后先输出一个“我要调 search_knowledge_base，参数是xxx”的意图，
-#   我们的代码执行完工具、把结果喂回去，模型再基于结果继续回答——
-#   这个“思考 ⇄ 行动”的循环（行业叫 ReAct：Reasoning + Acting）就是 Agent 的本质。
+# Agent = 能自己决定“要不要用工具、用哪个”的大模型应用，核心是“思考⇄行动”的 ReAct 循环：
+# 模型输出“我要调某工具、参数xxx”的意图 → 代码执行 → 结果喂回 → 模型基于结果继续回答。
 #
-# 本文件放了三套 Agent 实现（学习对照用，同时只有一套生效，由 config.py 的开关决定）：
-#   1. TOOLS                —— 手写版：自己写工具说明书 JSON，自己写调用循环（循环代码在 main.py）
-#   2. lc_agent/lc_executor  —— LangChain 版：框架接管“决定→执行→回填”整个循环
-#   3. lg_graph              —— LangGraph 版：图结构编排，支持流式逐字输出（当前主力）
-# 另外还有两件事：
-#   MCP 外部工具加载器 get_mcp_tools —— 把外部进程提供的工具接进来给模型用；
-#   技能包工具 load_skill —— 把 backend/skills/ 下的操作手册按需喂给模型（Skill 机制，原理见 skills.py）。
+# 本文件放三套实现（学习对照，由 config.py 开关决定谁生效）：
+#   TOOLS 手写版 / lc_agent+lc_executor LangChain 版 / lg_graph LangGraph 版（当前主力，支持流式）。
+# 另有 MCP 外部工具加载器 get_mcp_tools、技能包工具 load_skill（原理见 skills.py）。
 import os   # 读环境变量（API 密钥）
-import sys  # 用 sys.executable 拿当前 Python 解释器的路径（启动 MCP 子进程要用）
+import sys  # sys.executable 拿当前 Python 解释器路径（启动 MCP 子进程用）
 
 # ----- LangChain 相关 -----
-from langchain_openai import ChatOpenAI                     # LangChain 封装的模型客户端，连 DeepSeek 也是用它（改 base_url 即可）
-from langchain_core.tools import tool as langchain_tool     # @tool 装饰器：把普通 Python 函数一键变成 Agent 能用的工具
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # 提示词模板 + “此处插入历史消息”的占位符
-# LangChain 1.x 的版本变动：老的 Agent API（create_tool_calling_agent / AgentExecutor）被移出了主包，
-# 移进了 langchain-classic 兼容包。所以这里从 langchain_classic 导入，功能完全一样，只是换了个包名。
+from langchain_openai import ChatOpenAI                     # LangChain 封装的模型客户端，连 DeepSeek 改 base_url 即可
+from langchain_core.tools import tool as langchain_tool     # @tool：把普通 Python 函数变成 Agent 可用的工具
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # 提示词模板 + 历史消息占位符
+# LangChain 1.x 把老的 Agent API 移进了 langchain-classic 兼容包，功能一样只是换包名
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
 # ----- LangGraph 相关 -----
-# LangGraph 提供预构建的 ReAct Agent（上面说的“思考⇄行动”循环开箱即用，不用自己写 if 判断）。
-# 版本坑：老写法 from langgraph.prebuilt import create_react_agent 在 1.x 已被弃用，
-# 新家在 langchain.agents.create_agent，参数名也从 prompt 改成了 system_prompt。
-# 这里用 as 起回老名字，下面代码保持熟悉的叫法。
+# 1.x 里 create_react_agent 的新家是 langchain.agents.create_agent，参数 prompt 改名 system_prompt；用 as 起回老名字
 from langchain.agents import create_agent as create_react_agent
-# MCP：Model Context Protocol（模型上下文协议），让“外部工具服务”标准化接入大模型的协议。
-# 好处：工具由独立进程/服务提供，我们的项目不用把“抓取网页”“查天气”的代码写在自己仓库里，
-# 任何遵守该协议的工具都能即插即用。下面这个 adapter 的作用：把 MCP 工具自动转成 LangChain 工具对象，
-# 转换后模型用起来和本地工具没有任何区别。
+# MCP 让“外部工具服务”标准化接入大模型；下面的 adapter 把 MCP 工具自动转成 LangChain 工具对象，与本地工具无差别
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from .config import USE_MCP                    # MCP 总开关
-from .rag import search_knowledge_base         # 真正的检索能力（三套 Agent 共用同一个）
-from . import skills                           # 技能包加载器：提供技能清单（list_skills）和正文读取（load_skill）
+from .rag import search_knowledge_base         # 真正的检索能力（三套 Agent 共用）
+from . import skills                           # 技能包加载器：list_skills（清单）+ load_skill（正文）
 
 # ===== 助手人格设定 =====
-# 这是“身份层”提示词：每次对话都无条件放进 system 消息，与知识库检索结果无关。
-# 为什么写成编号规则而不是一句模糊描述：“性格沉稳”这类形容词模型执行得很飘，
-# 拆成可判定的具体条目（称呼谁、第一句说什么、emoji 用几个）模型才守得住。
-# 最后一条是必需的：不写显式指令时，模型常会否认自己有名字（“我是 AI 助手，没有名字”）。
-# 另外：这里用括号包着多个字符串相邻写的形式，Python 会自动把它们拼成一个长字符串（不用写 + 号）。
+# “身份层”提示词，每次对话无条件放进 system 消息。写成编号规则而非模糊形容词（“性格沉稳”模型执行很飘），
+# 拆成可判定条目模型才守得住；最后一条必需，否则模型常否认自己有名字。（相邻字符串 Python 自动拼接）
 PERSONA = (
     "你叫牛来（'牛来'就是你的名字），是亮哥（赵亮）的专属 AI 助手，性格沉稳可靠，像一位经验丰富的老秘书。\n"
     "说话规则：\n"
@@ -54,20 +37,10 @@ PERSONA = (
     "5. 被问及'你叫什么名字'等身份问题时，直接回答自己叫牛来，不要否认或另起名字。"
 )
 
-# ===== 手写版工具说明书（Tool Calling 的原始格式）=====
-# Tool Calling 的原理：我们把“有哪些工具可用”用 JSON 描述好，随请求一起发给模型；
-# 模型不执行任何代码，它只返回一个结构化的“调用意图”（工具名 + 参数），
-# 真正执行工具的是我们自己的代码，执行完再把结果发回给模型。
-# 一句话记住：模型负责“决定用不用”，代码负责“实际去做”——执行权始终在我们手里，这是安全边界。
-#
-# 下面这段 JSON 就是给模型看的“岗位说明书”，三个字段各有作用：
-#   name        —— 工具名，模型返回调用意图时会带上它，我们的代码靠它对号执行
-#   description —— 什么时候该用、什么时候不该用。这段措辞直接决定模型的调用准确率，是工具设计的核心：
-#                  写得太宽（“有问题就调用”）会导致闲聊也去查库，白耗一次检索；
-#                  写得太窄会漏查，模型凭自己的记忆编造公司制度。
-#                  注意这里明确写了“无关的常识问题和闲聊不要调用”——负向约束和正向约束一样重要。
-#   parameters  —— 参数的 JSON Schema（一种描述数据格式的规范）：query 是字符串、必填。
-#                  模型会按这个格式生成参数，我们的代码再把它解析出来。
+# ===== 手写版工具说明书（Tool Calling 原始格式）=====
+# 原理：把“有哪些工具”用 JSON 随请求发给模型；模型只返回“调用意图”（工具名+参数），执行权始终在我们代码手里。
+# 三字段：name 工具名（代码靠它对号执行）；description 何时用/不用（直接决定调用准确率，负向约束同样重要）；
+#         parameters 参数的 JSON Schema（query 为必填字符串）。
 TOOLS = [
     {
         "type": "function",
@@ -94,185 +67,128 @@ TOOLS = [
 ]
 
 # ===== MCP 外部工具加载 =====
-# 角色说明：MCP 分“客户端”和“服务端”两个角色。这里我们是客户端，
-# 去连接两个现成的 MCP 服务端（网页抓取 fetch、天气查询），把它们提供的工具接给模型用。
-_mcp_client = None       # MCP 客户端对象（第一次加载后常驻内存，后续请求复用）
-# 工具缓存的三种状态必须严格区分（这是本模块最容易踩的坑）：
-#   None    = 还没尝试加载过
-#   []      = 尝试过了但失败了（降级状态）
-#   有内容 = 加载成功
-# 如果用 None 同时表示“没加载”和“加载失败”，那失败之后每次对话请求都会重新去拉一次子进程，
-# 白白卡住接口好几秒，而且永远好不了。
+# 我们是 MCP 客户端，去连两个现成服务端（网页抓取 fetch、天气查询），把它们的工具接给模型用。
+_mcp_client = None       # MCP 客户端对象（首次加载后常驻内存，后续复用）
+# 🔴 工具缓存三状态必须严格区分（本模块最易踩的坑）：None=还没加载过 / []=加载失败（降级） / 有内容=成功。
+# 若用 None 同时表示“没加载”和“失败”，失败后每次请求都会重拉子进程，卡住接口且永远好不了。
 _mcp_tools_cache = None
 
 
 async def get_mcp_tools():
     """加载 MCP 外部工具，返回可供 Agent 使用的工具对象列表。
 
-    三个设计要点：
-    - 懒加载：不在模块导入时就加载，而是第一次真正需要时才加载。
-      因为 MCP 工具通过 stdio 方式连接，会拉起独立的 Python 子进程，
-      放在导入阶段会拖慢服务启动，而且一旦启动失败会导致整个后端起不来。
-    - 缓存：子进程只拉起一次，后续请求直接复用内存里的缓存列表。
-    - 降级：加载失败返回空列表 []，也不让 MCP 的问题阻断主流程——
-      没有外部工具，牛来依然能正常回答知识库问题和闲聊。
-    返回：工具对象列表（成功时 5 个，失败或开关关闭时 []）
+    三个设计要点：懒加载（首次需要时才加载，避免拖慢启动或启动失败拖垮后端）、
+    缓存（子进程只拉一次，后续复用）、降级（失败返回 []，不阻断主流程）。
+    返回：工具列表（成功 5 个，失败或开关关闭时 []）。
     """
-    global _mcp_client, _mcp_tools_cache  # 要修改模块级变量必须声明 global，否则下面的赋值只会创建一个同名局部变量
+    global _mcp_client, _mcp_tools_cache  # 改模块级变量必须声明 global，否则只会创建同名局部变量
     if not USE_MCP:
-        return []                        # 开关关闭：直接不加载
+        return []                        # 开关关闭：不加载
     if _mcp_tools_cache is not None:
-        return _mcp_tools_cache          # 已加载过（成功或失败都算）：直接返回缓存，不再拉子进程
+        return _mcp_tools_cache          # 已加载过（成功或失败都算）：返回缓存，不再拉子进程
     try:
-        # 声明要连接哪些 MCP 服务端。每个键是自己取的名字，值里说明怎么启动它。
+        # 声明要连哪些 MCP 服务端：键是自取的名字，值说明怎么启动它
         _mcp_client = MultiServerMCPClient({
             "fetch": {
-                # sys.executable = 当前正在运行后端的这个 Python 解释器的完整路径（venv 里的那个）。
-                # 不能写死成 "python"：系统可能装了多个 Python，写死会导致找不到 mcp_server_fetch 这个包。
+                # sys.executable = 当前运行后端的 Python 解释器完整路径；不能写死 "python"，否则可能找不到包
                 "command": sys.executable,
-                "args": ["-m", "mcp_server_fetch"],  # 等价于命令行执行 python -m mcp_server_fetch
-                "transport": "stdio",                # 通信方式：通过子进程的标准输入输出传递消息（本地工具的标准做法）
+                "args": ["-m", "mcp_server_fetch"],  # 等价于 python -m mcp_server_fetch
+                "transport": "stdio",                # 通过子进程标准输入输出通信（本地工具标准做法）
             },
-            "weather": {  # Open-Meteo 天气服务端：免费、不需要申请 API key
+            "weather": {  # Open-Meteo 天气服务端：免费、无需 API key
                 "command": sys.executable,
                 "args": ["-m", "open_meteo_mcp"],
                 "transport": "stdio",
             }
         })
-        # 有几个服务端就要开几个会话（嵌套 with），全部打开后 get_tools() 才能拿到所有工具。
-        # 只开一个会话的话，另一个服务端的工具会取不到——而且不报错，只是静默地少一批，很难发现。
-        # 两个服务端合计提供 9 个工具。
+        # 🔴 有几个服务端就开几个会话（嵌套 with），全打开后 get_tools() 才能拿到全部工具；
+        # 少开一个不报错、只是静默少一批，很难发现。两个服务端合计 9 个工具。
         async with _mcp_client.session("fetch"):
             async with _mcp_client.session("weather"):
                 all_tools = await _mcp_client.get_tools()
-        # 工具精简（本段的核心设计点）：天气服务端自带 8 个工具，其中时区转换、空气质量类
-        # 与模型自身能力重叠，留着只会增加决策噪音（工具越多，模型选错的概率越高），
-        # 所以只保留真正需要的，过滤后共 5 个工具进模型的工具清单：
+        # 工具精简（核心设计点）：天气服务端 8 个工具里时区/空气质量类与模型自身能力重叠，
+        # 留着只增加决策噪音（工具越多越易选错），过滤后保留 5 个进模型清单：
         _mcp_tools_cache = [
             t for t in all_tools
             if t.name == "fetch" or t.name in {   # fetch 是网页抓取工具本体
-                "get_current_weather",         # 当前天气：“北京现在天气怎么样”
-                "get_weather_byDateTimeRange", # 日期范围预报：“明天天气怎么样”
-                "get_weather_details",         # 详细天气（含预报）：“给我份详细天气报告”
-                "get_current_datetime",        # 当前时间：模型算“明天”是哪天要靠它（所以没被精简掉）
+                "get_current_weather",         # 当前天气
+                "get_weather_byDateTimeRange", # 日期范围预报
+                "get_weather_details",         # 详细天气（含预报）
+                "get_current_datetime",        # 当前时间：模型算“明天”要靠它，故保留
             }
         ]
         print(f"[MCP] 已加载工具: {[t.name for t in _mcp_tools_cache]}")  # 启动观察点：打在后端终端
     except Exception as e:
-        # 兜住所有异常：MCP 依赖外部子进程，环境缺包、启动超时都可能失败，
-        # 这里记一笔并降级，让服务照常跑。
+        # 兜住所有异常：MCP 依赖外部子进程，缺包/超时都可能失败，记一笔并降级，服务照常跑
         print(f"[MCP] 加载失败，降级为普通模式: {e}")
-        _mcp_tools_cache = []   # 注意：缓存成 [] 而不是 None，表示“试过了、失败了”，后续不再重试
+        _mcp_tools_cache = []   # 缓存成 [] 而非 None：表示“试过了、失败了”，后续不再重试
     return _mcp_tools_cache
 
 
 # ===== LangChain 版 Agent（对照实现）=====
-# @tool 装饰器的作用：把一个普通 Python 函数变成 Agent 可用的工具对象。
-# 工具说明书（名字、参数类型、用途描述）由装饰器自动从函数签名和 docstring 里生成——
-# 对比上面的手写版：同样的信息，手写版要写几十行 JSON，这里只要写好类型注解和 docstring。
-# 注意：docstring 不是普通注释，它会被当成提示词发给模型，措辞同样影响调用准确率。
+# @tool 从函数签名和 docstring 自动生成工具说明书（对比手写版几十行 JSON）。
+# 注意：docstring 不是普通注释，会被当提示词发给模型，措辞影响调用准确率。
 @langchain_tool
 def search_knowledge_base_lc(query: str) -> str:
     """检索企业知识库。当问题涉及公司制度、内部规定或用户个人档案时必须先调用本工具。"""
-    # 真正干活的还是 rag.py 里那个 search_knowledge_base——
-    # 三套 Agent 实现只是“编排方式”不同（谁来决定查、什么时候查），底层检索能力是同一个，不重复实现。
+    # 真正干活的还是 rag.py 的 search_knowledge_base；三套 Agent 只是编排方式不同，底层检索同一个
     hits = search_knowledge_base(query)
     if not hits:
-        # 没查到时要返回一句“人话”给模型，而不是空字符串：
-        # 模型看到明确的“没有检索到内容”，才会如实告诉用户库里没资料；
-        # 返回空串模型容易理解成“工具坏了”，或者干脆开始自己编。
+        # 没查到要返回“人话”而非空串：模型看到明确的“没检索到”才会如实告知，空串会被当成“工具坏了”或自己编
         return "知识库中没有检索到相关内容"
-    # 把检索结果拼成带编号的文本，格式：[1] (来自: 文件名)\n正文
-    # 编号是关键——提示词里要求模型“引用了资料的句子末尾标注 [1]”，
-    # 前端才能把回答里的编号和引用卡片对应起来，用户点一下就能核对原文。
+    # 拼成带编号文本 [1] (来自: 文件名)\n正文；编号是关键——提示词要求模型引用处标 [1]，前端才能对应引用卡片
     parts = [f"[{i + 1}] (来自: {meta.get('filename', '未知来源')})\n{doc}" for i, (doc, meta) in enumerate(hits)]
-    return "\n\n".join(parts)   # enumerate 同时拿到下标 i 和元素，i + 1 让编号从 1 开始（人看着习惯）
+    return "\n\n".join(parts)   # enumerate 拿下标 i，i+1 让编号从 1 开始
 
 
-# ===== 技能包工具（Skill 渐进式披露的第二层）=====
-# 和上面的知识库工具分工不同，两者提供的是两类东西：
-#   search_knowledge_base 提供“事实”——知识库文档里写了什么（年假几天、餐补多少）；
-#   load_skill           提供“章法”——某类任务该按什么步骤和标准来做（产品怎么用、文档怎么写）。
-# 这个分工正好对应 Agent 生态里的两个标准：MCP/Tool 管能力接入，Skill 管做事方法。
-#
-# 为什么把“加载手册”做成一个工具，而不是直接把手册全文塞进系统提示词：
-#   手册正文上千 token，塞进去的话每次请求都得付这笔钱（哪怕用户只是说“你好”），
-#   而且提示词越长模型注意力越涣散。做成工具后，常驻的只有一份技能清单（见下面 GRAPH_SYSTEM），
-#   模型判断“这问题得查手册”时才调本工具把正文拉进上下文——这就是渐进式披露。
+# ===== 技能包工具（Skill 渐进式披露第二层）=====
+# 分工：search_knowledge_base 提供“事实”（文档写了什么），load_skill 提供“章法”（某类任务怎么做）。
+# 做成工具而非直接塞全文：手册上千 token，塞进系统提示词每次请求都要付这笔钱且分散注意力；
+# 常驻的只有技能清单，模型判断需要时才调本工具把正文拉进上下文——即渐进式披露。
 @langchain_tool
 def load_skill(skill_name: str) -> str:
     """加载指定技能的完整操作手册。可用技能清单见系统提示词，skill_name 只能填清单里列出的名字。"""
-    # 本函数只是个壳：真正的目录扫描、白名单校验（防路径穿越）、缓存都在 skills.py 里。
-    # docstring 会被 @langchain_tool 自动当成工具说明书发给模型，所以措辞同样影响调用准确率。
+    # 本函数只是壳：目录扫描、白名单校验（防路径穿越）、缓存都在 skills.py 里
     return skills.load_skill(skill_name)
 
 
-# LangChain 版的模型客户端：和 config.py 里的 client 连的是同一个模型，
-# 只是 LangChain 要求用自己的封装类（ChatOpenAI）才能接入它的 Agent 体系。
+# LangChain 版模型客户端：连的模型和 config.py 的 client 相同，只是 LangChain 要求用自己的封装类 ChatOpenAI
 lc_llm = ChatOpenAI(
     model="deepseek-v4-flash",
     api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url="https://api.deepseek.com",  # DeepSeek 兼容 OpenAI 格式，所以 ChatOpenAI 换个地址就能连上
+    base_url="https://api.deepseek.com",  # DeepSeek 兼容 OpenAI 格式，ChatOpenAI 换地址即可连
 )
-# 提示词模板：定义每次请求发给模型的消息结构。
-# ChatPromptTemplate.from_messages 接收一个列表，每项是一类消息：
+# 提示词模板：定义每次请求发给模型的消息结构
 lc_prompt = ChatPromptTemplate.from_messages([
     ("system", PERSONA),                      # 人格设定，固定不变
-    MessagesPlaceholder("chat_history"),      # 占位符：调用时传进来的历史消息会插在这里
-    ("human", "{input}"),                     # 用户当前这句话；{input} 会被调用时传的同名变量替换
-    MessagesPlaceholder("agent_scratchpad"),  # Agent 的“草稿纸”：中间的思考过程、工具调用和返回结果都记在这里。
-                                              # 这是 LangChain Agent 的固定写法，名字不能改，照着写即可
+    MessagesPlaceholder("chat_history"),      # 占位符：调用时传入的历史消息插在这里
+    ("human", "{input}"),                     # 用户当前这句话；{input} 被同名变量替换
+    MessagesPlaceholder("agent_scratchpad"),  # Agent 草稿纸：中间思考/工具调用/结果记这里（固定写法，名字不能改）
 ])
 
-# 组装 Agent：把模型、工具清单、提示词模板三者绑在一起，得到一个“会决定调工具的推理器”。
+# 组装 Agent：把模型、工具清单、提示词模板绑在一起，得到“会决定调工具的推理器”
 lc_agent = create_tool_calling_agent(lc_llm, [search_knowledge_base_lc], lc_prompt)
-# AgentExecutor = 执行器：真正跑“决定→调工具→回填→再问模型”循环的是它，lc_agent 只负责单步推理。
-# 两者分开是 LangChain 的设计：推理（agent）和执行（executor）解耦。
+# AgentExecutor 才是真正跑“决定→调工具→回填→再问”循环的执行器，lc_agent 只负责单步推理（推理与执行解耦）
 lc_executor = AgentExecutor(agent=lc_agent, tools=[search_knowledge_base_lc],
-                            verbose=True)  # verbose=True：把 Agent 每一步的思考过程打印在后端终端，
-                                           # 能直观看到框架做了几次模型调用、每次传了什么，对比手写版时重点看这里
+                            verbose=True)  # verbose=True：把每步思考打印到后端终端，对比手写版时重点看这里
 
 # ===== LangGraph 版 Agent（当前主力）=====
-# LangGraph 是什么：把 Agent 的工作流建模成一张“图”——节点是步骤（调模型、执行工具），
-# 边是流转规则（模型要调工具就去工具节点，工具执行完回到模型节点，模型说完了就结束）。
-# “思考⇄行动”的循环由图自动跑，我们不用像手写版那样自己写 if 判断和两次调用。
-# 相比 LangChain 版，它的关键优势是支持流式：模型每吐一个字就能立刻转发给前端（打字机效果）；
-# LangChain 版的 invoke 必须等整个循环跑完才一次性返回。
+# LangGraph 把工作流建模成图：节点是步骤（调模型/执行工具），边是流转规则，“思考⇄行动”循环由图自动跑。
+# 相比 LangChain 版的关键优势是支持流式：模型每吐一个字就能转发前端（打字机效果）。
 #
-# 核心设计取舍：知识库检索不放给模型自主决定，而是由我们的代码在进图之前先做一次，
-# 把结果以“【编号资料】”的形式写进提示词。理由有三：
-#   ① 引用卡片能立刻发给前端，不用等模型决定完才出现（体验更快）；
-#   ② 没查到时“如实告知库里没资料”这个分支由代码控制，稳定可预期，不靠模型自觉；
-#   ③ 省掉一次“要不要查库”的模型决策调用，响应更快。
-# 一句话概括这个原则：确定性的活交给代码，生成性的活交给模型。
-# 但工具照常注册进图：万一代码检索的结果没覆盖用户问题，模型还能自己再查一次复核
-#（图的循环天然支持这种“回头补课”，手写版做不到）。
+# 核心取舍：知识库检索不交给模型决定，而由代码在进图前先做一次，把结果以“【编号资料】”写进提示词。理由：
+#   ① 引用卡片能立刻发前端，不用等模型决策；② “没查到就如实告知”分支由代码控制，稳定可预期；③ 省一次决策调用。
+#   一句话：确定性的活交给代码，生成性的活交给模型。但工具照常注册进图，模型可在代码检索没覆盖时自己再查复核。
 #
-# 系统提示词 = 人格（PERSONA）+ 回答规则。规则逐条对应一种场景，缺一条就会出对应的毛病：
-#   规则 1：有资料时只用资料答 + 标编号引用（不标编号，前端的引用卡片就对不上号）
-#   规则 2：资料为空/无关时如实说没有（不写这条，模型会凭训练记忆编造公司制度）
-#   规则 3：资料没覆盖时允许自己再查一次（兜底复核）
-#   规则 4：闲聊直接答，别调工具（不写这条，“你好”也可能触发一次无意义的检索）
-#   规则 5：需要实时网页内容时用 fetch 工具（并限定场景，避免知识库问题也去联网）
-#   规则 6：天气问题走天气工具。两个细节必须写清：城市名用英文/拼音（天气服务的地理编码对中文支持不稳），
-#          以及遇到“明天”这类相对日期要先查当前时间（模型不知道今天是几号，算不出明天的日期）
-#   规则 7：问产品自身怎么用时去加载技能手册（不写这条，模型对“怎么上传文件”只能凭想象编）
-#
-# 加规则 7 时必须同步改规则 2 和规则 4，否则三条会打架：
-#   产品使用类问题在知识库里必然检索不到（库里放的是企业文档，不是产品说明书），
-#   而 LangGraph 分支是代码先检索、把结果写进【编号资料】的，查不到就是“（无）”；
-#   此时规则 2 原文的“如实告知没有相关资料（不要调用工具）”会把正经的产品问题挡回去，
-#   规则 4 原文的“与知识库无关的直接回答、不要调工具”也可能让模型把它归到闲聊里。
-#   所以两条都加了“产品使用类问题按规则 7 处理”的例外声明。
-#   教训和改写员那次一模一样：提示词只能影响输出概率、不能给模型上锁，
-#   规则之间不留明确的优先级和例外出口，模型就自己挑一条走。
+# 系统提示词 = 人格 + 7 条回答规则，逐条对应一种场景（缺一条就出对应毛病）：有资料只用资料答+标编号引用、
+# 资料空/无关时如实说没有、没覆盖时允许再查、闲聊直接答不调工具、实时网页用 fetch、天气走天气工具、
+# 产品自身怎么用去加载技能手册。加规则 7 时必须同步给规则 2/4 加“产品问题按规则 7 处理”的例外，否则三条打架
+# （产品问题在知识库必然查不到，会被规则 2/4 当闲聊挡回去）——提示词只能影响概率、不能上锁，规则间要留明确出口。
 
 # ===== 技能清单（系统提示词里唯一的动态部分）=====
-# 模块加载时扫一次技能目录，把每个技能的 name + description 拼成清单常驻系统提示词。
-# 这是渐进式披露的第一层：只给“有哪些技能、分别什么时候用”，正文等模型调 load_skill 才给。
-# 好处：以后加新技能只要往 backend/skills/ 扔个文件夹，本文件一行代码都不用改。
-# 代价也要如实知道：技能多了这段清单会撑大系统提示词（每个技能约一两百 token），
-# 到几十个技能时就得改成“先按问题相关性筛选、再注入匹配上的那几个”，不能无脑全塞。
+# 模块加载时扫一次技能目录，把每个技能的 name+description 拼成清单常驻系统提示词（渐进式披露第一层）。
+# 好处：加新技能只要往 backend/skills/ 扔个文件夹，本文件不用改。代价：技能多了清单会撑大提示词，
+# 到几十个时应改成“先按相关性筛选再注入”，不能无脑全塞。
 _skill_list = skills.list_skills()
 _skill_menu = "".join(f"- {s['name']}：{s['description']}\n" for s in _skill_list)
 
@@ -292,16 +208,8 @@ GRAPH_SYSTEM = (
     # 技能清单只在真扫到了技能时才拼进去，空清单不留一个空标题
     + ("\n可用技能清单（load_skill 的 skill_name 只能填下面列出的名字）：\n" + _skill_menu if _skill_menu else "")
 )
-# 构建 LangGraph 图对象（模块加载时构建一次，之后所有请求复用）。
-# 参数：模型 + 工具列表 + 系统提示词（新版 API 的参数名是 system_prompt，旧版叫 prompt）。
-# 工具列表里有两类：本地知识库工具（查事实）+ 技能包工具（取章法）。
-# MCP 工具是异步加载的（要 await），模块导入阶段拿不到，
-# 所以 main.py 里在 MCP 加载成功后会现场再构建一张带 MCP 工具的图；加载失败就用下面这张。
-# 防死循环护栏 recursion_limit 不在这里传，而是在每次调用时通过 config 传（新版 API 的规定，见 main.py）。
-#
-# 已知局限（如实记录）：技能包工具只在 LangGraph 版生效，另两套实现没接：
-#   手写版的循环写死了 call = tool_calls[0]（只取第一个工具），支持多工具要把那里改成循环处理，
-#   为一个学习用的对照分支动核心循环不值得；
-#   LangChain 版的提示词模板用的是 PERSONA（不含上面那七条规则），即使把工具加进去也不会被触发。
-#   而 LangGraph 版就是当前主力和演示用的那套，所以只改它，改动面最小。
+# 构建 LangGraph 图对象（模块加载时构建一次，之后所有请求复用）。工具含本地知识库工具 + 技能包工具。
+# MCP 工具异步加载（要 await），导入阶段拿不到，所以 main.py 在 MCP 加载成功后会现场重建带 MCP 工具的图，失败则用这张。
+# 防死循环护栏 recursion_limit 不在这里传，而是每次调用时通过 config 传（新版 API 规定，见 main.py）。
+# 已知局限：技能包工具只在 LangGraph 版生效（手写版循环写死只取第一个工具、LangChain 版模板用的是不含规则的 PERSONA）。
 lg_graph = create_react_agent(lc_llm, [search_knowledge_base_lc, load_skill], system_prompt=GRAPH_SYSTEM)

@@ -1,8 +1,8 @@
 "use client";
-// ===== 页面入口（12.15 模块化拆分后，这个文件只剩两类事）=====
-// ① 业务编排：sendMessage（SSE 流式消费）、停止生成、新对话；② 组装组件树
-// 会话持久化在 hooks/useConversations，知识库文件管理在 hooks/useKnowledgeFiles，
-// 界面在 components/（Sidebar / Welcome / MessageList / ChatInput），共享类型在 types.ts
+// ===== 页面入口 =====
+// ① 业务编排：sendMessage（SSE 流式消费）、停止生成、新对话；② 组装组件树。
+// 会话持久化在 hooks/useConversations，知识库文件在 hooks/useKnowledgeFiles，
+// 界面在 components/，共享类型在 types.ts。
 import { useRef, useState } from "react";
 import ChatInput from "@/components/ChatInput";
 import MessageList from "@/components/MessageList";
@@ -29,7 +29,7 @@ export default function Home() {
     if (!content || loading) return;
 
     const userMsg = { role: "user", content };
-    // 第 3 期：欢迎页发出的第一句话负责"开新会话"，标题取问题前 20 字
+    // 欢迎页发出的第一句话负责“开新会话”，标题取问题前 20 字
     let convId = activeId;
     let history: Msg[];
     if (!convId) {
@@ -53,14 +53,13 @@ export default function Home() {
     setInput("");
     setLoading(true);
 
-    // 第 4 期：AbortController——“停止生成”就是中断这个信号，已流出的内容保留
+    // AbortController——“停止生成”就是中断这个信号，已流出的内容保留
     const controller = new AbortController();
     abortRef.current = controller;
 
     let aiContent = ""; // 提升到 try 外：catch 里要根据已生成量决定错误提示的写法
 
-    // 占位气泡必须在 fetch 前出生：后端决策调用在响应返回前就跑完了（最漫长的 1~3 秒），
-    // 等 fetch 结束再建气泡，等待期屏幕上一片空白，跳动点永远看不到（异常路径由 catch/finally 兜底）
+    // 占位气泡必须在 fetch 前出生：后端决策调用要 1~3 秒，晚建气泡会让等待期屏幕空白、跳动点看不到。
     setConversations(prev =>
       prev.map(c => (c.id === convId ? { ...c, messages: [...c.messages, { role: "assistant", content: "" }] } : c))
     );
@@ -86,7 +85,7 @@ export default function Home() {
         throw new Error(detail);
       }
       const decoder = new TextDecoder();
-      let buffer = ""; // SSE 缓冲区：网络分包和消息边界不对齐，必须攒够一条完整消息再解析（占位气泡已在 fetch 前创建）
+      let buffer = ""; // SSE 缓冲区：分包与消息边界不对齐，须攒够一条完整消息再解析
 
       while (reader) {
         const { done, value } = await reader.read();
@@ -109,7 +108,7 @@ export default function Home() {
           const payload = JSON.parse(data);
 
           if (name === "tool") {
-            // 第 7 步：模型决定查知识库时，先给用户一个明确的状态提示，替代干等（正文首 token 一到就被干净替换）
+            // 模型决定查知识库时，先给状态提示替代干等（正文首 token 一到就被替换）
             if (payload.called) {
               patchLastMsg(convId, m => ({ ...m, content: "🔍 正在检索知识库…" }));
             }
@@ -120,7 +119,7 @@ export default function Home() {
             aiContent += payload.content;
             patchLastMsg(convId, m => ({ ...m, content: aiContent }));
           } else if (name === "error") {
-            // 后端发来的模型故障事件：已流出的内容保留，追加一行醒目提示，用户不会不明所以卡住
+            // 后端模型故障事件：已流出内容保留，追加一行醒目提示
             aiContent += `\n\n> ⚠️ ${payload.message ?? "生成中断，请稍后再试"}`;
             patchLastMsg(convId, m => ({ ...m, content: aiContent }));
           }
@@ -131,8 +130,8 @@ export default function Home() {
       if (err instanceof DOMException && err.name === "AbortError") {
         // 用户点了停止：已流出的内容保留，静默结束，不提示错误
       } else {
-        // 网络失败/后端没开/后端报错：把错误写进气泡，不留一个卡死的空消息；
-        // 占位气泡此时必然已存在（fetch 前创建），错误文案直接填进空泡；“新建消息”分支仅作双保险
+        // 网络失败/后端没开/报错：把错误写进气泡，不留卡死的空消息；
+        // 占位气泡此时必已存在，错误文案直接填空泡，“新建消息”分支仅作双保险
         const msgText = err instanceof Error && err.message ? err.message : "无法连接后端服务，请确认后端已启动";
         const appendText = aiContent ? `\n\n> ⚠️ ${msgText}` : `⚠️ ${msgText}`;
         setConversations(prev =>
@@ -151,7 +150,7 @@ export default function Home() {
       }
     } finally {
       abortRef.current = null;
-      // 清理空占位消息（一个字都没到就被停掉时，不留空气泡；出错时上面已填了错误文案，不会被误删）
+      // 清理空占位消息（一字未到就被停掉时不留空气泡；出错时已填错误文案，不会误删）
       setConversations(prev =>
         prev.map(c =>
           c.id === convId
@@ -168,7 +167,7 @@ export default function Home() {
     }
   };
 
-  // 第 4 期：停止生成（中断请求，已流出的内容保留）
+  // 停止生成（中断请求，已流出的内容保留）
   const stopGeneration = () => {
     abortRef.current?.abort();
   };
@@ -198,7 +197,7 @@ export default function Home() {
 
       <main className="flex-1 flex flex-col min-w-0">
         {messages.length === 0 ? (
-          /* --- 欢迎页（默认新对话：给面试官的功能广告位，三大能力一目了然） --- */
+          /* --- 欢迎页（新对话默认展示：三大能力一目了然） --- */
           <Welcome onSend={sendMessage} />
         ) : (
           /* --- 对话流（气泡 / Markdown / 引用卡片 / 复制 / 贴底滚动都在组件内） --- */

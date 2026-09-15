@@ -1,7 +1,6 @@
 "use client";
-// ===== 底部输入区组件（12.15 模块化拆分：从 page.tsx 抽出）=====
-// 文本框自适应高度、Enter 发送 / Shift+Enter 换行、生成中变停止按钮；
-// input 状态由页面持有（发送后清空是页面的事），这里只管输入交互
+// ===== 底部输入区组件 =====
+// 文本框自适应高度、Enter 发送 / Shift+Enter 换行、生成中变停止按钮；input 状态由页面持有。
 import { SendHorizonal, Square } from "lucide-react";
 
 type ChatInputProps = {
@@ -47,7 +46,7 @@ export default function ChatInput({ input, setInput, loading, onSend, onStop, te
           <span className="text-[11px] text-gray-300 pl-1">
             基于知识库回答 · 引用可查证
           </span>
-          {/* 第 4 期：生成中发送按钮变停止按钮（方块图标）*/}
+          {/* 生成中：发送按钮变停止按钮 */}
           {loading ? (
             <button
               onClick={onStop}

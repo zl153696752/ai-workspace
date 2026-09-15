@@ -1,6 +1,6 @@
 "use client";
-// ===== 侧栏组件（12.15 模块化拆分：从 page.tsx 抽出）=====
-// 纯展示 + 回调上抛：数据和业务逻辑都在页面/hooks 手里，这里只负责画和转发点击
+// ===== 侧栏组件 =====
+// 纯展示 + 回调上抛：数据和业务逻辑都在页面/hooks 手里，这里只负责画和转发点击。
 import {
   Download,
   FileText,
@@ -116,7 +116,7 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* ===== 第 3 期：会话列表（按时间倒序，新会话在上）===== */}
+      {/* ===== 会话列表（按时间倒序，新会话在上）===== */}
       <div className="flex-1 overflow-y-auto px-3 pb-2">
         <div className="px-2 pb-1.5 text-xs text-gray-400">对话记录</div>
         {conversations.length === 0 ? (
