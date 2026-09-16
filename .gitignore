@@ -10,6 +10,14 @@ chroma_db/
 frontend_out/
 _probe_modelscope/
 _deploy/
-# 重排模型体积大（279MB，超 GitHub 单文件 100MB 限制），不纳入 git。
-# 下载方式见 docs/企业级改造方案.md 步骤 1（官方源/镜像源直链）。
+# ── 重排模型 bge-reranker-base（279MB，超 GitHub 单文件 100MB 硬限制，故不纳入 GitHub）──
+# 只影响 GitHub 主仓库，不影响部署：_deploy 是独立仓库，sync.ps1 从磁盘拷贝、
+# 其 .gitattributes 第48行已把 models/**/*.onnx 排除出 LFS，会随 Dockerfile COPY 烤进 ModelScope 镜像。
+#
+# 首次 clone 后需手动下载补回（不下载也不报错：reranker.py 会自动降级为纯 RRF 排序）：
+#   1) 新建目录：backend/app/models/bge-reranker-base/
+#   2) 下载两个文件放进去（代理开用官方源；慢就把 huggingface.co 换成 hf-mirror.com）：
+#      model_quantized.onnx (≈279MB)  https://huggingface.co/Xenova/bge-reranker-base/resolve/main/onnx/model_quantized.onnx
+#      tokenizer.json       (≈17MB)   https://huggingface.co/Xenova/bge-reranker-base/resolve/main/tokenizer.json
+#   3) 核对字节数：onnx≈279301077、tokenizer≈17098079；若只有几百字节=下成LFS指针，删掉重下
 backend/app/models/bge-reranker-base/
