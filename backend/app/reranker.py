@@ -77,20 +77,30 @@ def score_pair(query: str, passage: str) -> float:
     return float(np.asarray(out).reshape(-1)[0])
 
 
-def rerank(query: str, candidates: list, top_k: int = 4) -> list:
-    """对候选切片按与 query 的相关性精排，返回得分最高的前 top_k 个。
+def is_available() -> bool:
+    """精排模型是否可用。不可用时上层（Self-CRAG）应跳过「按分数判相关」改走降级，别拿 0.0 当真实分数用。"""
+    return _reranker.available
 
-    参数 candidates：[(正文, 元数据), ...]（与 rag.search_knowledge_base 的返回结构一致）
-    返回：同结构列表，按相关性降序、最多 top_k 条。
-    模型不可用时：不打分，按传入顺序返回前 top_k 条（优雅降级，绝不报错、绝不返回空）。
+
+def rerank_with_scores(query: str, candidates: list, top_k: int = 4) -> list:
+    """对候选精排，返回 [(相关性分数, 正文, 元数据), ...]（按分数降序，最多 top_k 条）。
+
+    与 rerank 的区别：保留每片的 cross-encoder 相关性 logit，供 Self-CRAG 逐片判定相关与否。
+    分数含义：bge-reranker-base 输出单个 logit，>0≈相关、<0≈不相关（越大越相关）。
+    模型不可用时：分数统一记 0.0、按原序返回前 top_k（降级，绝不报错、绝不返回空）。
     """
     if not candidates:
         return []
     if not _reranker.available:
-        return candidates[:top_k]
+        return [(0.0, doc, meta) for doc, meta in candidates[:top_k]]
     scored = [(score_pair(query, doc), doc, meta) for doc, meta in candidates]
     scored.sort(key=lambda x: x[0], reverse=True)   # 分数越大越相关，降序
-    return [(doc, meta) for _score, doc, meta in scored[:top_k]]
+    return scored[:top_k]
+
+
+def rerank(query: str, candidates: list, top_k: int = 4) -> list:
+    """对候选切片按相关性精排，返回 [(正文, 元数据), ...]（丢弃分数版，向后兼容旧调用与文件末尾自测）。"""
+    return [(doc, meta) for _score, doc, meta in rerank_with_scores(query, candidates, top_k)]
 
 
 # ===== 单独验证打分能力（步骤 1 自测：直接运行本文件即可，不依赖服务）=====

@@ -9,7 +9,7 @@ from rank_bm25 import BM25Okapi  # BM25 关键词打分（经典 Okapi 变体）
 
 # 相对导入：app 是一个包，包内互相引用要用 . 开头，写成 from config import ... 会报 ModuleNotFoundError
 from .config import collection, CHUNK_SIZE, CHUNK_OVERLAP
-from .reranker import rerank  # 步骤1 做好的精排（Cross-Encoder）；模型缺失时它内部自动降级为原序
+from .reranker import rerank_with_scores, is_available  # 精排（带分数版供质检判定）+ 可用性探测（缺失时降级）
 
 
 # ===== 混合检索参数（2b）=====
@@ -17,6 +17,11 @@ RECALL_N = 10   # 每路召回条数：宽松多取，给融合和精排留足�
 FUSE_N   = 8    # RRF 融合后送入精排的候选数
 TOP_K    = 3    # 精排后最终返回条数（对齐旧版 top-3，前端引用卡片数量不变）
 _RRF_K   = 60   # RRF 平滑常数，经验默认值：越大越弱化头部名次的碾压，60 是通用取值
+# ===== Self-CRAG 质检参数（步骤3）=====
+# 相关性阈值：精排 cross-encoder 的 logit，>0≈相关、<0≈不相关（bge-reranker-base 的语义）。
+# 逐片判定：分数 ≥ 阈值的片才算「相关资料」保留，低于阈值的片丢弃（引用卡片因此更干净）。
+# 🔴 0.0 是原理性默认值（logit 过 0 = sigmoid 概率过 0.5），真实最优阈值需步骤10 用评估集标定，别拍脑袋改。
+_CRAG_SCORE_THRESHOLD = 0.0
 
 
 def _vector_recall(query: str, n: int) -> list:
@@ -101,25 +106,61 @@ def _rrf_fuse(vec_hits: list, kw_hits: list, k: int, top_n: int) -> list:
     return [(doc, meta) for _score, doc, meta in ordered[:top_n]]
 
 
-def search_knowledge_base(query: str) -> list:
-    """混合检索：向量召回 + BM25 关键词召回 → RRF 融合 → Reranker 精排，返回 [(正文, 元数据), ...]。
+def _retrieve_once(query: str) -> list:
+    """跑一遍完整混合检索：向量召回 + BM25 召回 → RRF 融合 → 精排，返回 [(相关性分数, 正文, 元数据), ...]。
 
-    返回结构与旧版完全一致，故上游（main.py / agents.py / mcp_server.py）无需任何改动。
-    返回 [] 表示「没有可用资料」，调用方据此走「如实告知没有资料」分支——
-    检索层任何异常都在内部降级为 []，绝不把堆栈抛给用户（对应方案「检索层异常统一 catch 并降级」）。
+    这是「单次检索」的原子操作。步骤5 的检索质检 worker 判定不相关后，会用重写过的查询再调它一次（有界重查）。
+    精排保留每片分数，正是为了让上层拿分数当 Self-CRAG 的「质检员」。
+    """
+    # 两路各自独立召回（各自内部已 try/except，一路炸了另一路照常）
+    vec_hits = _vector_recall(query, RECALL_N)
+    kw_hits = _keyword_recall(query, RECALL_N)
+    # RRF 融合去重，取前 FUSE_N 条作为精排候选
+    candidates = _rrf_fuse(vec_hits, kw_hits, _RRF_K, FUSE_N)
+    if not candidates:
+        return []
+    # 精排收窄到 TOP_K，并保留每片相关性分数；reranker 缺失时它内部降级为「按融合原序、分数记 0.0」
+    return rerank_with_scores(query, candidates, top_k=TOP_K)
+
+
+def _grade_and_filter(scored_hits: list) -> tuple:
+    """Self-CRAG 的「检索质检员」：用精排分数给结果定级、并逐片过滤掉不相关的。
+
+    返回 (保留的 [(正文, 元数据), ...], 级别)，级别 ∈ {"correct", "incorrect", "unavailable"}：
+      correct     —— 至少一片分数 ≥ 阈值，资料可用（低分片已被过滤，引用卡片更干净）；
+      incorrect   —— 全部低于阈值，判定「没检索到相关资料」；
+      unavailable —— 精排模型缺失、拿不到真实分数，无法判定 → 信任检索原序（降级，不过滤）。
+    巧思：复用精排的 cross-encoder 分数当质检员，不必再叫一个模型判相关性（省延迟省成本，也避免「核查模型自己也会错」）。
+    """
+    if not scored_hits:
+        return [], "incorrect"          # 一条都没召回，等同「不相关」
+    if not is_available():
+        # 降级：没有可信分数（全 0.0），阈值过滤会把所有片误杀，故原样放行、交给后续提示词规则兜底
+        return [(doc, meta) for _score, doc, meta in scored_hits], "unavailable"
+    kept = [(doc, meta) for score, doc, meta in scored_hits if score >= _CRAG_SCORE_THRESHOLD]
+    return kept, ("correct" if kept else "incorrect")
+
+
+def search_knowledge_base(query: str) -> list:
+    """混合检索 + Self-CRAG 质检，返回 [(正文, 元数据), ...]。
+
+    流程：单次检索（召回→融合→精排）→ 用精排分数逐片质检 →
+      ① correct / unavailable：返回过滤后的资料（模型缺失时降级信任原序）；
+      ② incorrect：返回 []（如实「无资料」，调用方据此走「告知没有资料」分支）。
+    「不相关时有界重写重查一次」不在这里做，留给步骤5 的检索质检 worker（那里有意图路由，
+    只对真·知识库查询触发重写重查，避免拖累闲聊）——见改造方案步骤3/5。
+
+    返回结构与旧版一致，上游（main.py / agents.py / mcp_server.py）无需改动；
+    检索层任何异常都在内部降级为 []，绝不把堆栈抛给用户。
     """
     try:
         if collection.count() == 0:
             return []   # 库空：对空集合做 query，Chroma 会抛异常，提前拦掉
-        # 两路各自独立召回（各自内部已 try/except，一路炸了另一路照常）
-        vec_hits = _vector_recall(query, RECALL_N)
-        kw_hits = _keyword_recall(query, RECALL_N)
-        # RRF 融合去重，取前 FUSE_N 条作为精排候选
-        candidates = _rrf_fuse(vec_hits, kw_hits, _RRF_K, FUSE_N)
-        if not candidates:
+        kept, grade = _grade_and_filter(_retrieve_once(query))
+        if grade == "incorrect":
+            print(f"[Self-CRAG] 检索结果全部低于相关性阈值，判定无资料：{query!r}")
             return []
-        # 精排收窄到 TOP_K；reranker 模型缺失时它内部自动降级为「按融合原序返回前 TOP_K」
-        return rerank(query, candidates, top_k=TOP_K)
+        return kept   # correct：过滤后的相关资料；unavailable：降级信任原序
     except Exception as e:
         print(f"[检索] 混合检索异常，降级为「无资料」：{e}")
         return []
