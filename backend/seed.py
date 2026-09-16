@@ -29,7 +29,8 @@ def seed():
             print(f"[种子] {filename} 已在库中，跳过")
             continue
 
-        chunks = split_text(text)
+        chunk_pairs = split_text(text)
+        chunks = [txt for txt, _m in chunk_pairs]
         if not chunks:
             print(f"[种子] {filename} 切不出片，跳过")
             continue
@@ -47,7 +48,7 @@ def seed():
         collection.upsert(
             documents=chunks,
             ids=ids,
-            metadatas=[{"filename": filename, "saved_as": save_name}] * len(chunks),
+            metadatas=[{**m, "filename": filename, "saved_as": save_name} for _txt, m in chunk_pairs],
         )
         print(f"[种子] {filename} 已灌入 {len(chunks)} 个切片")
 

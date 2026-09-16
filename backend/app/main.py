@@ -345,7 +345,8 @@ async def upload(file: UploadFile = File(...)):
     # 文字量闸门：决定入库成本的是文字量而非文件体积
     if len(text) > MAX_TEXT_LENGTH:
         raise HTTPException(status_code=400, detail="文件文字内容过多（超过 30 万字），请拆分成多份上传")
-    chunks = split_text(text)   # 切成 300 字/片、重叠 50 字的小段
+    chunk_pairs = split_text(text)              # [(正文, {section, part}), ...]
+    chunks = [txt for txt, _m in chunk_pairs]   # 只取正文：后续 len(chunks)/documents=chunks 保持不变
     if not chunks:
         # 解析成功却无文字 = 扫描版/图片型 PDF（无文字层），需 OCR，本项目不做。
         raise HTTPException(status_code=400, detail="未能提取到文字，可能是图片型/扫描件文件，暂不支持")
@@ -390,7 +391,8 @@ async def upload(file: UploadFile = File(...)):
         ids=ids,            # 每片的主键，和 documents 一一对应
         # 元数据：记录每片来自哪个文件、磁盘名是什么。[字典] * N 复制成每片一份。
         # 不参与向量计算，但用于过滤查询，也是前端引用卡片显示文件名的来源。
-        metadatas=[{"filename": file.filename, "saved_as": save_name}] * len(chunks),
+        # 每片元数据 = 片级(section, part) + 文件级(filename, saved_as)
+        metadatas=[{**m, "filename": file.filename, "saved_as": save_name} for _txt, m in chunk_pairs],
     )
     print(f"知识库切片总数: {collection.count()}")   # 观察点：终端可看到入库后切片总数
 

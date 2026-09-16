@@ -1,38 +1,128 @@
 # ===== 知识库检索服务（RAG 的底层能力层）=====
 # RAG = 检索增强生成：先从企业文档检索出相关原文，再塞进提示词让模型基于资料作答，避免瞎编且能标注出处。
 # 本文件集中三个工具函数：向量检索、文字提取、长文切片。HTTP 路由和 Agent 工具都复用它们。
-import io                    # 提供内存中的“假文件”对象 BytesIO
+import io                    # 提供内存中的"假文件"对象 BytesIO
+import re                    # 结构化切片要用正则识别标题、按句切分（2a 加的，保留）
+import jieba                 # 中文分词：BM25 是词袋模型，中文必须先切成词
 from pypdf import PdfReader  # 解析 PDF、提取文字
+from rank_bm25 import BM25Okapi  # BM25 关键词打分（经典 Okapi 变体）
 
 # 相对导入：app 是一个包，包内互相引用要用 . 开头，写成 from config import ... 会报 ModuleNotFoundError
 from .config import collection, CHUNK_SIZE, CHUNK_OVERLAP
+from .reranker import rerank  # 步骤1 做好的精排（Cross-Encoder）；模型缺失时它内部自动降级为原序
+
+
+# ===== 混合检索参数（2b）=====
+RECALL_N = 10   # 每路召回条数：宽松多取，给融合和精排留足候选（旧的只取 3 太窄，相关的常被丢在第 4、5 名）
+FUSE_N   = 8    # RRF 融合后送入精排的候选数
+TOP_K    = 3    # 精排后最终返回条数（对齐旧版 top-3，前端引用卡片数量不变）
+_RRF_K   = 60   # RRF 平滑常数，经验默认值：越大越弱化头部名次的碾压，60 是通用取值
+
+
+def _vector_recall(query: str, n: int) -> list:
+    """向量召回：Chroma 语义检索，返回按距离升序的 [(id, 正文, 元数据), ...]。
+
+    只负责「宽松多召回 + 排名」，不再用距离硬阈值砍（相关与否交给后面 RRF + 精排判定）。
+    任何异常都吞掉返回 []，让检索退化为「只有关键词那一路」，不拖垮整个查询。
+    """
+    try:
+        res = collection.query(
+            query_texts=[query],
+            n_results=min(n, collection.count()),   # 库里不足 n 条时取实际条数，避免 Chroma 告警
+            include=["documents", "metadatas"]
+        )
+        return [
+            (cid, doc, meta)
+            for cid, doc, meta in zip(res["ids"][0], res["documents"][0], res["metadatas"][0])
+            if doc and doc.strip()
+        ]
+    except Exception as e:
+        print(f"[检索] 向量召回失败，本路降级为空：{e}")
+        return []
+
+
+# BM25 索引缓存：全量重建成本高（要拉全库 + 逐片分词），用「切片总数」当版本戳缓存，
+# 只有增删文档导致总数变化时才重建。容器场景 seed 在启动时灌库、运行中极少变，命中率高。
+_bm25_cache = {"count": -1, "index": None, "rows": []}
+
+
+def _get_bm25_index():
+    """返回 (BM25 索引, [(id, 正文, 元数据), ...])；库空或构建失败返回 (None, [])。"""
+    try:
+        total = collection.count()
+    except Exception as e:
+        print(f"[检索] 读取切片总数失败，关键词召回降级：{e}")
+        return None, []
+    if total == 0:
+        return None, []
+    if _bm25_cache["count"] == total and _bm25_cache["index"] is not None:
+        return _bm25_cache["index"], _bm25_cache["rows"]   # 总数没变，复用缓存
+    try:
+        got = collection.get(include=["documents", "metadatas"])   # 小库全量拉取；大库需换专用检索服务
+        rows = [(cid, doc, meta) for cid, doc, meta
+                in zip(got["ids"], got["documents"], got["metadatas"]) if doc and doc.strip()]
+        tokenized = [jieba.lcut(doc) for _cid, doc, _meta in rows]  # BM25 吃「分好词的 token 列表」
+        _bm25_cache.update(count=total, index=BM25Okapi(tokenized), rows=rows)
+        return _bm25_cache["index"], rows
+    except Exception as e:
+        print(f"[检索] BM25 索引构建失败，关键词召回降级：{e}")
+        return None, []
+
+
+def _keyword_recall(query: str, n: int) -> list:
+    """关键词召回：jieba 把 query 分词，用 BM25 对全库打分，取 top-n 的 [(id, 正文, 元数据), ...]。"""
+    index, rows = _get_bm25_index()
+    if index is None:
+        return []
+    try:
+        scores = index.get_scores(jieba.lcut(query))
+        order = sorted(range(len(rows)), key=lambda i: scores[i], reverse=True)[:n]  # 分数降序取前 n 的下标
+        return [rows[i] for i in order if scores[i] > 0]   # 分数 0 = 一个关键词都没命中，不召回
+    except Exception as e:
+        print(f"[检索] 关键词召回失败，本路降级为空：{e}")
+        return []
+
+
+def _rrf_fuse(vec_hits: list, kw_hits: list, k: int, top_n: int) -> list:
+    """RRF（倒数排名融合）：把向量、关键词两份「名次」合成一份，返回 [(正文, 元数据), ...]。
+
+    为什么用名次不用分数：向量给的是距离、BM25 给的关键词分，量纲相反又不可比，直接相加没意义；
+    名次天然可比（第 1 名就是各自最相关的），故 RRF 只看名次、免归一化、免调权重。
+    公式 score(d)=Σ 1/(k+rank)：同一片被两路都召回 → 两项相加 → 共识者自然浮到最前，去重与融合一步到位。
+    """
+    fused = {}   # id -> [rrf分, 正文, 元数据]
+    for hits in (vec_hits, kw_hits):
+        for rank, (cid, doc, meta) in enumerate(hits, start=1):   # rank 从 1 开始
+            if cid in fused:
+                fused[cid][0] += 1.0 / (k + rank)   # 已在另一路出现 → 累加（这就是「共识加分」）
+            else:
+                fused[cid] = [1.0 / (k + rank), doc, meta]
+    ordered = sorted(fused.values(), key=lambda x: x[0], reverse=True)   # 按 RRF 分降序
+    return [(doc, meta) for _score, doc, meta in ordered[:top_n]]
 
 
 def search_knowledge_base(query: str) -> list:
-    """在知识库做语义检索，返回与 query 最相关的切片（RAG 的检索核心）。
+    """混合检索：向量召回 + BM25 关键词召回 → RRF 融合 → Reranker 精排，返回 [(正文, 元数据), ...]。
 
-    参数 query：检索语句，最好是贴近文档措辞的完整句子（向量检索对措辞敏感）。
-    返回：[(切片正文, 元数据), ...]，最多 3 条按相关度降序；元数据含 filename 供前端引用卡片用。
-          库空或都不够相关时返回 []，调用方据此走“如实告知没有资料”分支。
+    返回结构与旧版完全一致，故上游（main.py / agents.py / mcp_server.py）无需任何改动。
+    返回 [] 表示「没有可用资料」，调用方据此走「如实告知没有资料」分支——
+    检索层任何异常都在内部降级为 []，绝不把堆栈抛给用户（对应方案「检索层异常统一 catch 并降级」）。
     """
-    # 库空时提前返回：对空集合做 query，Chroma 会抛异常
-    if collection.count() == 0:
+    try:
+        if collection.count() == 0:
+            return []   # 库空：对空集合做 query，Chroma 会抛异常，提前拦掉
+        # 两路各自独立召回（各自内部已 try/except，一路炸了另一路照常）
+        vec_hits = _vector_recall(query, RECALL_N)
+        kw_hits = _keyword_recall(query, RECALL_N)
+        # RRF 融合去重，取前 FUSE_N 条作为精排候选
+        candidates = _rrf_fuse(vec_hits, kw_hits, _RRF_K, FUSE_N)
+        if not candidates:
+            return []
+        # 精排收窄到 TOP_K；reranker 模型缺失时它内部自动降级为「按融合原序返回前 TOP_K」
+        return rerank(query, candidates, top_k=TOP_K)
+    except Exception as e:
+        print(f"[检索] 混合检索异常，降级为「无资料」：{e}")
         return []
-    # collection.query：把文本转向量（Chroma 内部自动完成）再找最近的 n_results 条
-    results = collection.query(
-        query_texts=[query],   # 传文本即可，参数是列表（支持一次查多个，本项目只查一个）
-        n_results=3,           # 取最相近 3 条：多了塞无关内容干扰模型，少了可能漏关键信息
-        include=["documents", "distances", "metadatas"]  # 返回切片正文、距离（越小越相似）、元数据
-    )
-    # 因查询传的是列表，每个字段都是二层列表，取 [0] 才是第一个问题的结果；zip 按位置配对三字段。
-    # 🔴 距离阈值 1.1：collection 用默认 l2（平方欧氏距离）空间，对归一化向量有 l2²=2×余弦距离，
-    #    数值是网上余弦经验值的两倍，别直接套。换嵌入模型必须重新标定此阈值，否则会误杀相关切片。
-    # 列表推导式一次完成：配对字段 + 过滤空白内容 + 过滤超阈值的不相关切片
-    return [
-        (doc, meta) for doc, dist, meta in zip(
-            results["documents"][0], results["distances"][0], results["metadatas"][0])
-        if doc and doc.strip() and dist < 1.1   # 三条件全满足才留：doc 非空、去空白后有字、距离 < 阈值
-    ]
 
 
 def extract_text(content: bytes, ext: str) -> str:
@@ -51,22 +141,84 @@ def extract_text(content: bytes, ext: str) -> str:
     return content.decode("utf-8", errors="ignore")
 
 
-def split_text(text: str) -> list:
-    """把长文切成若干小片供向量化入库（每片一条向量，检索才能定位到具体段落）。
-
-    切法是“滑动窗口”：每片最多 CHUNK_SIZE 字，相邻片重叠 CHUNK_OVERLAP 字。
-    以 300/50 为例：第1片 0~300、第2片 250~550……每轮起点净进 250，必然走到文末不死循环。
-    参数 text：全文纯文字；返回：切片字符串列表。
+def _split_long_block(block: str) -> list:
+    """把单个超长块按句子切成 ≤CHUNK_SIZE 的片，相邻片重叠 CHUNK_OVERLAP 字。
+    优先在句末标点（。！？；）或换行处断句，实在没标点才退化为定长滑窗，
+    保证再长的段落也不会一刀切在句子中间（这正是旧「定长硬切」最大的毛病）。
     """
-    # 先把换行压成空格：避免切片边界落在标题/列表的排版结构上把内容拆成表达不完整的两半
-    text = text.replace("\n", " ")
-    chunks = []
-    start = 0                        # 当前切片起始字符位置
-    while start < len(text):         # 起点走到文末就结束
-        end = start + CHUNK_SIZE     # 右边界（text[a:b] 不含 b，正好取 CHUNK_SIZE 字）
-        chunk = text[start:end]      # 到文末时 end 超出总长，Python 自动截到末尾不报错
-        if chunk.strip():            # 跳过纯空白片：转向量没意义还白占存储
-            chunks.append(chunk)
-        # 下一片起点回退 CHUNK_OVERLAP 字（这就是“重叠”）：保证任一句不会因硬切丢失完整表达
-        start = end - CHUNK_OVERLAP
-    return chunks
+    # (?<=...) 零宽断言：在句末标点「之后」切开，标点本身留在前一句末尾
+    sentences = [s for s in (x.strip() for x in re.split(r"(?<=[。！？；\n])", block)) if s]
+    pieces, cur = [], ""
+    for s in sentences:
+        if len(s) > CHUNK_SIZE:                      # 单句就超长（无标点长串）→ 定长滑窗兜底
+            if cur.strip():
+                pieces.append(cur.strip()); cur = ""
+            start = 0
+            while start < len(s):
+                pieces.append(s[start:start + CHUNK_SIZE])
+                start += CHUNK_SIZE - CHUNK_OVERLAP
+            continue
+        if cur and len(cur) + len(s) > CHUNK_SIZE:   # 攒够一片就结算
+            pieces.append(cur.strip())
+            cur = cur[-CHUNK_OVERLAP:] + s           # 重叠：带上上一片末尾，边界句不丢上下文
+        else:
+            cur += s
+    if cur.strip():
+        pieces.append(cur.strip())
+    return pieces
+
+
+def split_text(text: str) -> list:
+    """结构化切片：按标题/段落切、尊重语义边界，每片携带结构元数据。
+
+    与旧「压平换行 + 定长硬切」的区别：旧法把所有换行压成空格再每 300 字一刀，
+    会把标题、列表、段落拦腰截断，切出的片语义不完整（半句话 / 混两个话题），
+    向量与关键词检索都受累。新法：
+      ① 先按空行把全文切成自然块，markdown 标题识别为「小节名」；
+      ② 过小的相邻同节块合并到接近 CHUNK_SIZE，超大的块交给 _split_long_block 按句切；
+      ③ 每片记录所属小节（section）与片序号（part），供引用卡片 / 后续质检使用。
+
+    参数 text：全文纯文字。
+    返回：[(切片正文, {"section": 小节标题, "part": 片序号}), ...]
+    """
+    # 1) 统一换行符 + 去每行行尾空白（保留段落结构，不再压平换行）
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = "\n".join(ln.rstrip() for ln in text.split("\n")).strip()
+    if not text:
+        return []
+    # 让 markdown 标题独占一块（前后补空行），便于下一步把它单独识别成小节名
+    text = re.sub(r"(?m)^(#{1,6}\s+.*)$", r"\n\1\n", text)
+
+    # 2) 按空行切自然块；纯标题块记为随后内容的小节名，本身不单独成片
+    blocks, current_section = [], ""
+    for blk in re.split(r"\n\s*\n", text):
+        blk = blk.strip()
+        if not blk:
+            continue
+        m = re.match(r"^#{1,6}\s+(.*)$", blk)
+        if m and "\n" not in blk:
+            current_section = m.group(1).strip()
+            continue
+        blocks.append((current_section, blk))
+
+    # 3) 合并过小块 / 拆分超大块，使每片尽量接近但不超过 CHUNK_SIZE
+    chunks, buf, buf_section = [], "", ""
+    for section, blk in blocks:
+        if len(blk) > CHUNK_SIZE:                    # 单块超长：先结算缓冲区，再按句拆
+            if buf.strip():
+                chunks.append((buf.strip(), buf_section)); buf, buf_section = "", ""
+            for piece in _split_long_block(blk):
+                chunks.append((piece, section))
+            continue
+        # 跨小节、或累加会超 CHUNK_SIZE → 先结算当前缓冲区，再另起一片
+        if buf and (section != buf_section or len(buf) + len(blk) + 1 > CHUNK_SIZE):
+            chunks.append((buf.strip(), buf_section))
+            buf, buf_section = blk, section
+        else:
+            buf = f"{buf}\n{blk}" if buf else blk    # 同节且没超 → 继续往缓冲区攒
+            buf_section = section
+    if buf.strip():
+        chunks.append((buf.strip(), buf_section))
+
+    # 4) 附 part 序号，组装成 (正文, 元数据) 返回
+    return [(txt, {"section": sec, "part": i}) for i, (txt, sec) in enumerate(chunks)]
