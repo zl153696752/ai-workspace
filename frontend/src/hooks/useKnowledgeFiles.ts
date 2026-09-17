@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import type { KbFile } from "@/types";
 import { API_BASE } from "@/lib/api";
+import { authHeaders } from "@/lib/auth";   // 步骤4c：每个请求带上门票（游客返回空对象、自动不带头）
 
 export function useKnowledgeFiles() {
   const [files, setFiles] = useState<KbFile[]>([]); // 知识库文件清单（来自后端，非本地记录）
@@ -11,7 +12,7 @@ export function useKnowledgeFiles() {
 
   const loadFiles = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/files`);
+      const res = await fetch(`${API_BASE}/api/files`, { headers: authHeaders() });   // 带票：亮哥拿到含私人的清单，游客只拿公共
       if (res.ok) setFiles((await res.json()).files);
     } catch {
       // 后端没启动时清单保持为空，不阻断页面
@@ -22,7 +23,7 @@ export function useKnowledgeFiles() {
     loadFiles(); // 首次挂载拉一次真实清单
   }, []);
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>, isPrivate = false) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -36,10 +37,12 @@ export function useKnowledgeFiles() {
     setUploading(true);
     const formData = new FormData();
     formData.append("file", file); // "file" 这个名字要和后端 UploadFile 的参数名一致
+    formData.append("private", String(isPrivate)); // 私人标记：后端 Form(False) 接收；游客就算传 true 也会被后端强制成公共
 
     try {
       const res = await fetch(`${API_BASE}/api/upload`, {
         method: "POST",
+        headers: authHeaders(), // 只加 Authorization（游客为空 {}）；🔴 仍绝不手动设 Content-Type——FormData 的 boundary 必须让浏览器自己生成
         body: formData, // ⚠️ 注意：发 FormData 千万不要手动设置 Content-Type！
       });
 
@@ -80,6 +83,7 @@ export function useKnowledgeFiles() {
     try {
       const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`, {
         method: "DELETE",
+        headers: authHeaders(), // 带票：亮哥过 require_liang；游客被后端 403（4c-3 前端还会对游客直接隐藏删除按钮）
       });
       if (!res.ok) {
         const err = await res.json();
@@ -96,7 +100,7 @@ export function useKnowledgeFiles() {
   // 成功才触发下载，失败弹出后端 detail，页面纹丝不动。
   const downloadFile = async (filename: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}/download`);
+      const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}/download`, { headers: authHeaders() });   // 带票：私人文件亮哥能下、游客被后端 403
       if (!res.ok) {
         let detail = "下载失败";
         try {
@@ -120,5 +124,5 @@ export function useKnowledgeFiles() {
     }
   };
 
-  return { files, uploading, handleUpload, deleteFile, downloadFile };
+  return { files, uploading, loadFiles, handleUpload, deleteFile, downloadFile };   // 暴露 loadFiles：登录/退出后 page.tsx 要调它刷新清单（身份变了、可见文件也变）
 }

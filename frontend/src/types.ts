@@ -5,7 +5,7 @@
 export type Source = { id: number; filename: string; snippet: string };
 // 一条消息：role 区分 user/assistant，AI 消息可携带引用卡片
 export type Msg = { role: string; content: string; sources?: Source[] };
-// 知识库文件（后端 /api/files 返回：文件名 + 切片数，后端才是真相之源）
-export type KbFile = { filename: string; chunks: number };
+// 知识库文件（后端 /api/files 返回：文件名 + 切片数 + 公私标记，后端才是真相之源）
+export type KbFile = { filename: string; chunks: number; private: boolean };
 // 一次会话：id 唯一标识，title 用首条提问生成，消息和创建时间一起存
 export type Conversation = { id: string; title: string; messages: Msg[]; createdAt: number };

@@ -106,15 +106,27 @@ def _rrf_fuse(vec_hits: list, kw_hits: list, k: int, top_n: int) -> list:
     return [(doc, meta) for _score, doc, meta in ordered[:top_n]]
 
 
-def _retrieve_once(query: str) -> list:
+def _filter_private(hits: list, allow_private: bool) -> list:
+    """身份过滤：allow_private=False（游客）时剔除标了 private 的切片，True（亮哥）原样放行。
+
+    🔴 放在【召回层】过滤（不是精排后）：这样游客拿到的是「最好的公共结果」，
+    不会出现「私人片先占了 top-k 名额、再被丢弃，导致公共结果变少」的降级。
+    meta.get("private", False)：老数据 / seed 底料没有 private 字段，默认当公共——它们本就该对所有人可见。
+    """
+    if allow_private:
+        return hits
+    return [(cid, doc, meta) for cid, doc, meta in hits if not meta.get("private", False)]
+
+
+def _retrieve_once(query: str, allow_private: bool = False) -> list:
     """跑一遍完整混合检索：向量召回 + BM25 召回 → RRF 融合 → 精排，返回 [(相关性分数, 正文, 元数据), ...]。
 
     这是「单次检索」的原子操作。步骤5 的检索质检 worker 判定不相关后，会用重写过的查询再调它一次（有界重查）。
     精排保留每片分数，正是为了让上层拿分数当 Self-CRAG 的「质检员」。
     """
     # 两路各自独立召回（各自内部已 try/except，一路炸了另一路照常）
-    vec_hits = _vector_recall(query, RECALL_N)
-    kw_hits = _keyword_recall(query, RECALL_N)
+    vec_hits = _filter_private(_vector_recall(query, RECALL_N), allow_private)
+    kw_hits = _filter_private(_keyword_recall(query, RECALL_N), allow_private)
     # RRF 融合去重，取前 FUSE_N 条作为精排候选
     candidates = _rrf_fuse(vec_hits, kw_hits, _RRF_K, FUSE_N)
     if not candidates:
@@ -141,7 +153,7 @@ def _grade_and_filter(scored_hits: list) -> tuple:
     return kept, ("correct" if kept else "incorrect")
 
 
-def search_knowledge_base(query: str) -> list:
+def search_knowledge_base(query: str, allow_private: bool = False) -> list:
     """混合检索 + Self-CRAG 质检，返回 [(正文, 元数据), ...]。
 
     流程：单次检索（召回→融合→精排）→ 用精排分数逐片质检 →
@@ -156,7 +168,7 @@ def search_knowledge_base(query: str) -> list:
     try:
         if collection.count() == 0:
             return []   # 库空：对空集合做 query，Chroma 会抛异常，提前拦掉
-        kept, grade = _grade_and_filter(_retrieve_once(query))
+        kept, grade = _grade_and_filter(_retrieve_once(query, allow_private))
         if grade == "incorrect":
             print(f"[Self-CRAG] 检索结果全部低于相关性阈值，判定无资料：{query!r}")
             return []

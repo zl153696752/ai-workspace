@@ -12,6 +12,8 @@ import { useConversations } from "@/hooks/useConversations";
 import { useKnowledgeFiles } from "@/hooks/useKnowledgeFiles";
 import type { Conversation, Msg } from "@/types";
 import { API_BASE } from "@/lib/api";
+import { authHeaders } from "@/lib/auth";   // 步骤4c：chat 请求带门票
+import { useAuth } from "@/hooks/useAuth";  // 步骤4c：登录状态（isLiang + 登录/退出）
 
 export default function Home() {
   const [input, setInput] = useState("");
@@ -20,9 +22,9 @@ export default function Home() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // 会话数据（恢复/回写/删除都在 hook 里）+ 知识库文件（清单/上传/删除/下载都在 hook 里）
-  const { conversations, setConversations, activeId, setActiveId, messages, patchLastMsg, deleteConversation } =
-    useConversations();
-  const { files, uploading, handleUpload, deleteFile, downloadFile } = useKnowledgeFiles();
+  const { conversations, setConversations, activeId, setActiveId, messages, patchLastMsg, deleteConversation } = useConversations();
+  const { files, uploading, loadFiles, handleUpload, deleteFile, downloadFile } = useKnowledgeFiles();
+  const { isLiang, login, logout } = useAuth();   // 步骤4c：身份状态（前端"有没有票"，真正裁决在后端）
 
   const sendMessage = async (text?: string) => {
     const content = (text ?? input).trim();
@@ -67,7 +69,7 @@ export default function Home() {
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ messages: history }), // 发包含本句话的完整历史
         signal: controller.signal,
       });
@@ -179,6 +181,17 @@ export default function Home() {
     textareaRef.current?.focus();
   };
 
+  // 登录：换到票后必须重新拉一次清单——身份从游客变亮哥，可见文件多了私人的
+  const handleLogin = async (password: string) => {
+    const ok = await login(password);
+    if (ok) await loadFiles();
+  };
+  // 退出：删票后同样刷新清单——变回游客，私人文档要从列表消失
+  const handleLogout = () => {
+    logout();
+    loadFiles();
+  };
+
   return (
     <div className="flex h-screen bg-white text-gray-800">
       <Sidebar
@@ -187,12 +200,15 @@ export default function Home() {
         loading={loading}
         files={files}
         uploading={uploading}
+        isLiang={isLiang}
         onNewConversation={newConversation}
         onSelectConversation={setActiveId}
         onDeleteConversation={deleteConversation}
         onUploadFile={handleUpload}
         onDownloadFile={downloadFile}
         onDeleteFile={deleteFile}
+        onLogin={handleLogin}
+        onLogout={handleLogout}
       />
 
       <main className="flex-1 flex flex-col min-w-0">

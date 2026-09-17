@@ -1,7 +1,7 @@
 # ===== FastAPI 应用组装 + 路由层（整个后端的入口）=====
-# 只做两类事：① 应用组装（FastAPI 实例、跨域、请求体模型）；② 六个 HTTP 接口（/api/chat + 上传/清单/删除/下载）。
-# 业务逻辑不在这里（配置在 config.py、检索切片在 rag.py、Agent 编排在 agents.py），本文件只负责接收请求→调用→按 HTTP 返回。
-from fastapi import FastAPI, UploadFile, File, HTTPException
+# 只做两类事：① 应用组装（FastAPI 实例、跨域、请求体模型）；② 七个 HTTP 接口（/api/chat + 登录 + 上传/清单/删除/下载）。
+# 业务逻辑不在这里（配置在 config.py、鉴权在 auth.py、检索切片在 rag.py、Agent 编排在 agents.py），本文件只负责接收请求→调用→按 HTTP 返回。
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 # HTTPException：抛出带状态码的错误，FastAPI 自动转成 {"detail": "错误文案"} 的 JSON 响应
 from fastapi.middleware.cors import CORSMiddleware   # 跨域中间件（解决前端域名/端口与后端不同时浏览器的拦截）
 from fastapi.responses import StreamingResponse, FileResponse
@@ -16,12 +16,13 @@ import hashlib  # 计算文件内容的 MD5 指纹（用于内容查重和文件
 import json      # 序列化 SSE 推送的数据、解析模型返回的工具参数
 import os        # 路径拼接、判断文件是否存在
 
-# 下面三行是本项目自己的模块，依赖单向：config（资源）← rag（检索）← agents（编排）← main（组装+路由），不会循环引用。
+# 下面几行是本项目自己的模块，依赖单向：config（资源）← auth（鉴权）/ rag（检索）← agents（编排）← main（组装+路由），不会循环引用。
 from .config import (client, collection, UPLOAD_DIR, ALLOWED_EXT, MAX_FILE_SIZE, MAX_TEXT_LENGTH,
                      USE_LANGCHAIN, USE_LANGGRAPH)
 from .rag import search_knowledge_base, extract_text, split_text
-from .agents import (PERSONA, TOOLS, GRAPH_SYSTEM, get_mcp_tools, search_knowledge_base_lc,
-                     lc_llm, lc_executor, lg_graph, load_skill)
+from .agents import (PERSONA, TOOLS, build_graph_system, get_mcp_tools, search_knowledge_base_lc,
+                     lc_llm, lc_executor, load_skill)
+from .auth import verify_password, issue_token, get_identity, require_liang   # 步骤4：验口令+签发票+解析身份+亮哥守卫
 
 app = FastAPI(title="AI Workspace")   # title 会显示在自动生成的接口文档页（启动后访问 /docs）上
 
@@ -46,9 +47,26 @@ async def health():
     """
     return {
         "status": "ok",
-        "chroma_chunks": collection.count(),   # 知识库里的切片总数，0 = 空库
+        "chroma_chunks": collection.count(),  # 知识库里的切片总数，0 = 空库
         "uploads_dir_ok": os.path.isdir(UPLOAD_DIR),
     }
+
+
+class LoginRequest(BaseModel):
+    """登录请求体：只要一个口令。身份固定是亮哥（本项目只有这一个特权身份，无注册）。"""
+    password: str
+
+
+@app.post("/api/login")
+async def login(req: LoginRequest):
+    """亮哥登录：验口令 → 签发 30 天有效的 JWT 门票 → 返回给前端存起来、后续请求带上。
+
+    口令错 / 未配置哈希 → 401。统一文案"口令不正确"，绝不透露是"口令错"还是"没配置"，
+    避免给暴力破解者反馈（这是安全接口的常规做法）。
+    """
+    if not verify_password(req.password):
+        raise HTTPException(status_code=401, detail="口令不正确")
+    return {"token": issue_token(), "token_type": "bearer"}
 
 
 class ChatRequest(BaseModel):
@@ -61,7 +79,7 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
     """流式对话接口（整个项目的核心接口）。
 
     返回方式是 SSE（Server-Sent Events，服务器推送事件）：
@@ -113,11 +131,14 @@ async def chat(req: ChatRequest):
         mcp_tools = await get_mcp_tools()   # await：异步等待加载结果（首次会拉子进程，之后直接读缓存）
         # MCP 工具与本地工具放进同一列表交给图，模型眼里没区别（都只看说明书决定用哪个）。加载成功就现场重建带全部工具的图，失败（[]）就复用 agents.py 预建的普通图。
         # 🔴 load_skill 重建时必须一并带上：漏掉的话 MCP 加载成功（正常情况）反而让技能失效，且不报错——产品问题又变回“知识库里没有相关资料”。
+        # 步骤4d：一律按当前身份现场重建图（游客版/亮哥版），不再退回预建的静态 lg_graph——
+        # 那张写死"称呼亮哥"，游客走到会让图级(L135)和消息级(L169)提示词自相矛盾。
+        # 重建只是搭图对象、不调模型，开销极小；MCP 为空时 [本地工具]+[] 与原 lg_graph 工具集等价，降级行为不变。
         active_graph = create_react_agent(lc_llm, [search_knowledge_base_lc, load_skill] + mcp_tools,
-                                          system_prompt=GRAPH_SYSTEM) if mcp_tools else lg_graph
+                                          system_prompt=build_graph_system(identity["is_liang"]))
 
         # ----- 第 3 步：代码先检索，把结果整理成编号资料（给模型）+ 引用卡片（给前端）-----
-        hits = search_knowledge_base(query)   # 不交给模型决定，这里直接查（设计取舍的理由见 agents.py 的 LangGraph 段注释）
+        hits = search_knowledge_base(query, allow_private=identity["is_liang"])   # 身份过滤在 rag.py 召回层做，游客只出公共
         sources = []         # 给前端的引用卡片数据
         context_parts = []   # 给模型的编号资料文本
         seen = set()         # 去重用的集合，记录已处理过的（文件名, 正文）组合
@@ -148,7 +169,7 @@ async def chat(req: ChatRequest):
             # 对检索是优点、对回答是缺陷（会丢语气细节甚至改变原意），回灌等于偷偷替换用户提问
             # （曾出事故：用户说“讲个故事”，改写模型编了个故事当检索词又被当用户问题回灌，牛来以为故事是用户写的）。
             # 指代问题不用担心：完整历史在 messages[:-1] 里，回答模型自己解得开。
-            lg_messages = [{"role": "system", "content": GRAPH_SYSTEM}] + messages[:-1] + [
+            lg_messages = [{"role": "system", "content": build_graph_system(identity["is_liang"])}] + messages[:-1] + [
                 {"role": "user", "content": f"【编号资料】\n{material}\n\n【用户问题】\n{messages[-1]['content']}"}
             ]
             # 拼接顺序：messages[:-1] = 除最后一条外的全部历史（保持多轮上下文）；最后一条重写成“资料+问题”格式，检索结果就这样进提示词
@@ -307,7 +328,7 @@ async def chat(req: ChatRequest):
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(file: UploadFile = File(...), private: bool = Form(False), identity: dict = Depends(get_identity)):
     """文档上传入库接口：校验 → 提取文字 → 切片 → 查重 → 存盘 → 写入向量库。
 
     参数 file 由 FastAPI 从 multipart/form-data 自动解析（File(...) 表示必填）。
@@ -315,6 +336,9 @@ async def upload(file: UploadFile = File(...)):
            "chunks": 切了多少片, "overwritten": 是否覆盖了同名旧文件}
     前端靠 overwritten 分流提示文案（“上传成功” vs “已覆盖旧版本”）。
     """
+    # ----- 0. 私人归属判定 -----
+    # 仅亮哥可标私人；游客传的一律强制公共（匿名无归属），即使表单带了 private=true 也忽略——权限矩阵的硬规则。
+    is_private = bool(private) and identity["is_liang"]
     # ----- 1. 校验文件类型（白名单）-----
     # splitext 拆出后缀并转小写，".TXT" 和 ".txt" 都能通过。
     ext = os.path.splitext(file.filename)[1].lower()
@@ -392,16 +416,16 @@ async def upload(file: UploadFile = File(...)):
         # 元数据：记录每片来自哪个文件、磁盘名是什么。[字典] * N 复制成每片一份。
         # 不参与向量计算，但用于过滤查询，也是前端引用卡片显示文件名的来源。
         # 每片元数据 = 片级(section, part) + 文件级(filename, saved_as)
-        metadatas=[{**m, "filename": file.filename, "saved_as": save_name} for _txt, m in chunk_pairs],
+        metadatas=[{**m, "filename": file.filename, "saved_as": save_name, "private": is_private} for _txt, m in chunk_pairs],
     )
     print(f"知识库切片总数: {collection.count()}")   # 观察点：终端可看到入库后切片总数
 
     return {"filename": file.filename, "saved_as": save_name, "size": len(content),
-            "chunks": len(chunks), "overwritten": overwritten}
+            "chunks": len(chunks), "overwritten": overwritten, "private": is_private}
 
 
 @app.get("/api/files")
-async def list_files():
+async def list_files(identity: dict = Depends(get_identity)):
     """知识库文件清单接口：返回库里有哪些文件、各切了多少片（前端侧边栏的文件列表靠它）。
 
     返回：{"files": [{"filename": "公司制度.txt", "chunks": 3}, ...]}
@@ -413,12 +437,17 @@ async def list_files():
     # collection.get 不带条件 = 取所有切片元数据（只取 metadatas 不取正文，少传数据）
     data = collection.get(include=["metadatas"])
     # 库里存“切片”，前端要“文件”维度，故按 filename 聚合：统计每个文件名出现次数 = 切片数。
-    counter = {}   # {文件名: 切片数}
+    counter = {}  # {文件名: 切片数}
+    priv_flag = {}  # {文件名: 是否私人}——同一文件各切片 private 一致，记录供前端画公/私徽章
     for meta in data["metadatas"]:
-        name = meta.get("filename", "未知来源")   # .get 带默认值：早期数据可能没这个字段，不至于报错
-        counter[name] = counter.get(name, 0) + 1  # 字典计数的标准写法：没这个键就当 0，然后 +1
-    # 转成前端好遍历的数组格式（字典在 JSON 里是对象，不如直接给数组）
-    return {"files": [{"filename": n, "chunks": c} for n, c in counter.items()]}
+        is_priv = bool(meta.get("private", False))  # 老数据无 private 字段 → 默认公共
+        if is_priv and not identity["is_liang"]:
+            continue  # 游客：私人切片直接跳过——不计入清单、不暴露存在（私人对游客彻底隐身）
+        name = meta.get("filename", "未知来源")  # .get 带默认值：早期数据可能没这个字段，不至于报错
+        counter[name] = counter.get(name, 0) + 1  # 字典计数：没这个键当 0 再 +1
+        priv_flag[name] = is_priv
+    # 转成前端好遍历的数组；带 private 字段供前端画「公/私」徽章
+    return {"files": [{"filename": n, "chunks": c, "private": priv_flag.get(n, False)} for n, c in counter.items()]}
 
 
 def cleanup_saved_files(saved_names):
@@ -452,7 +481,7 @@ PROTECTED_FILES = {"公司制度.txt"}   # 用集合：in 判断更快，语义�
 
 
 @app.delete("/api/files/{filename}")
-async def delete_file(filename: str):
+async def delete_file(filename: str, _identity: dict = Depends(require_liang)):
     """从知识库删除一个文档：向量库里的切片 + uploads/ 里的物理文件一起清掉。
 
     路径参数 filename 是原文件名（非磁盘哈希名），FastAPI 从 URL 自动取出。
@@ -479,7 +508,7 @@ async def delete_file(filename: str):
 
 
 @app.get("/api/files/{filename}/download")
-async def download_file(filename: str):
+async def download_file(filename: str, identity: dict = Depends(get_identity)):
     """下载知识库里的原文件。
 
     链路：原文件名 → 查 Chroma 元数据拿到磁盘哈希名 → 返回该磁盘文件。
@@ -489,6 +518,9 @@ async def download_file(filename: str):
     data = collection.get(where={"filename": filename}, include=["metadatas"], limit=1)
     if not data["ids"]:
         raise HTTPException(status_code=404, detail="知识库中没有这个文件")
+    # 私人文档权限：游客请求私人文件一律 403（亮哥放行）。放在 404 之后——先确认文件存在，再判权限。
+    if bool(data["metadatas"][0].get("private", False)) and not identity["is_liang"]:
+        raise HTTPException(status_code=403, detail="该文档为亮哥私人内容，游客无权下载")
     saved_as = data["metadatas"][0].get("saved_as")
     if not saved_as:
         # 早期数据无 saved_as 字段（那时还没做“保存原文件”）。如实告知“没存原文件、请重新上传”，

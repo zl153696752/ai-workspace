@@ -44,3 +44,17 @@ CHUNK_OVERLAP = 50   # 相邻片重叠 50 字：避免硬切把句子拦腰截�
 USE_LANGCHAIN = False  # True：/api/chat 交给 LangChain Agent，框架自动完成“决定调工具→执行→回填→生成”
 USE_LANGGRAPH = True   # True：交给 LangGraph（当前生效），流式打字机 + 引用卡片齐全
 USE_MCP = True         # True：加载外部 MCP 工具服务（网页抓取、天气），失败自动降级为“只有知识库工具”，不影响启动
+# ===== 鉴权配置（步骤4：JWT + 双身份）=====
+# 🔴 三项全从环境变量读，绝不写死进代码或前端包——密钥一旦进前端，谁都能伪造"亮哥门票"。
+# JWT_SECRET：签名门票的密钥，必须【稳定】(重启不变)，否则已发出的 token 会全部失效。
+#   线上在 ModelScope 环境变量里固定一个长随机串；本地写进 backend/.env。
+#   缺失时下面兜底生成一个随机密钥（仅开发方便，代价是重启即失效），并打印告警。
+# ADMIN_PASSWORD_HASH：亮哥口令的 bcrypt 哈希（不是明文！），生成方式见 auth.py 末尾的一次性小工具。
+# TOKEN_EXPIRE_DAYS：门票有效期（天），方案定 30 天。
+import secrets as _secrets   # 标准库：生成密码学安全的随机串（仅兜底密钥用）
+
+JWT_SECRET = os.getenv("JWT_SECRET") or _secrets.token_urlsafe(32)
+if not os.getenv("JWT_SECRET"):
+    print("[鉴权] ⚠️ 未设置 JWT_SECRET，已临时生成随机密钥：重启后所有已签发 token 会失效，仅供本地开发。线上务必在环境变量固定它。")
+ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")   # 空 = 未配置：登录接口会明确拒绝，绝不"空口令放行"
+TOKEN_EXPIRE_DAYS = int(os.getenv("TOKEN_EXPIRE_DAYS", "30"))

@@ -1,9 +1,11 @@
 "use client";
 // ===== 侧栏组件 =====
-// 纯展示 + 回调上抛：数据和业务逻辑都在页面/hooks 手里，这里只负责画和转发点击。
+// 展示 + 回调上抛为主；仅"登录口令输入""私人上传勾选"两处是本地 UI 状态（步骤4c），不必上抛给页面。
+import { useState } from "react";   // 步骤4c：登录口令、私人勾选两处本地状态
 import {
   Download,
   FileText,
+  Lock,
   MessageSquare,
   Paperclip,
   Plus,
@@ -18,12 +20,15 @@ type SidebarProps = {
   loading: boolean;
   files: KbFile[];
   uploading: boolean;
+  isLiang: boolean;   // 步骤4c：是否亮哥——决定画不画删除按钮、私人勾选、登录框还是退出
   onNewConversation: () => void;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
-  onUploadFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onUploadFile: (e: React.ChangeEvent<HTMLInputElement>, isPrivate: boolean) => void;   // 步骤4c：多带一个"是否私人"
   onDownloadFile: (filename: string) => void;
   onDeleteFile: (filename: string) => void;
+  onLogin: (password: string) => void;   // 步骤4c：登录（口令上抛给 page.tsx 换票）
+  onLogout: () => void;                  // 步骤4c：退出（前端删票）
 };
 
 export default function Sidebar({
@@ -32,13 +37,19 @@ export default function Sidebar({
   loading,
   files,
   uploading,
+  isLiang,
   onNewConversation,
   onSelectConversation,
   onDeleteConversation,
   onUploadFile,
   onDownloadFile,
   onDeleteFile,
+  onLogin,
+  onLogout,
 }: SidebarProps) {
+  // 步骤4c：两处纯本地 UI 状态——登录口令输入、上传时的"私人"勾选（都不用上抛给页面）
+  const [pw, setPw] = useState("");
+  const [uploadPrivate, setUploadPrivate] = useState(false);
   return (
     <aside className="w-[240px] shrink-0 bg-[#f7f8fa] border-r border-gray-200/70 flex flex-col">
       <div className="p-3 space-y-3">
@@ -75,11 +86,25 @@ export default function Sidebar({
             <input
               type="file"
               accept=".txt,.md,.pdf"
-              onChange={onUploadFile}
+              onChange={e => onUploadFile(e, uploadPrivate)}
               disabled={uploading}
               className="hidden"
             />
           </label>
+
+          {/* 私人上传勾选：仅亮哥可见。游客传的一律公共（后端也会强制），故前端干脆不给游客这个选项 */}
+          {isLiang && (
+            <label className="flex items-center gap-1.5 px-3 pt-1.5 text-xs text-gray-500 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={uploadPrivate}
+                onChange={e => setUploadPrivate(e.target.checked)}
+                className="accent-[#4d6bfe]"
+              />
+              <Lock className="w-3 h-3" />
+              传为私人（仅自己可见）
+            </label>
+          )}
 
           <div className="mt-2 space-y-1">
             {files.length === 0 ? (
@@ -94,6 +119,15 @@ export default function Sidebar({
                   <span className="flex-1 truncate" title={f.filename}>
                     {f.filename}
                   </span>
+                  {/* 私人徽章：只有亮哥的清单里会出现 private=true 的文件（游客的私人片后端已过滤） */}
+                  {f.private && (
+                    <span
+                      className="shrink-0 flex items-center gap-0.5 text-[10px] px-1 py-0.5 rounded bg-amber-50 text-amber-600 border border-amber-200/70"
+                      title="私人文档：仅亮哥可见、可下载"
+                    >
+                      <Lock className="w-2.5 h-2.5" /> 私
+                    </span>
+                  )}
                   <span className="text-[10px] text-gray-300 shrink-0">{f.chunks}片</span>
                   <button
                     onClick={() => onDownloadFile(f.filename)}
@@ -102,13 +136,16 @@ export default function Sidebar({
                   >
                     <Download className="w-3.5 h-3.5" />
                   </button>
-                  <button
-                    onClick={() => onDeleteFile(f.filename)}
-                    title="从知识库删除该文档"
-                    className="opacity-0 group-hover/file:opacity-100 p-0.5 rounded text-gray-300 hover:text-red-500 transition-all shrink-0"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  {/* 删除按钮：仅亮哥可见（游客界面直接不画＝体验层；后端 require_liang 的 403 才是安全层，两层独立） */}
+                  {isLiang && (
+                    <button
+                      onClick={() => onDeleteFile(f.filename)}
+                      title="从知识库删除该文档"
+                      className="opacity-0 group-hover/file:opacity-100 p-0.5 rounded text-gray-300 hover:text-red-500 transition-all shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               ))
             )}
@@ -153,8 +190,52 @@ export default function Sidebar({
         )}
       </div>
 
-      <div className="p-4 text-[11px] text-gray-300">
-        RAG · FastAPI · Chroma · DeepSeek
+      {/* ===== 底部：身份区（游客显示登录框，亮哥显示"已登录 + 退出"）===== */}
+      <div className="p-3 border-t border-gray-200/70 space-y-2">
+        {isLiang ? (
+          <div className="flex items-center justify-between px-1">
+            <span className="flex items-center gap-1 text-xs text-gray-500">
+              <Lock className="w-3 h-3 text-[#4d6bfe]" /> 已登录 · 亮哥
+            </span>
+            <button
+              onClick={() => {
+                onLogout();
+                setPw("");
+              }}
+              className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+            >
+              退出
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            <input
+              type="password"
+              value={pw}
+              onChange={e => setPw(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  onLogin(pw);
+                  setPw("");
+                }
+              }}
+              placeholder="亮哥口令"
+              className="w-full px-2 py-1.5 text-xs rounded-md border border-gray-300 focus:outline-none focus:border-[#4d6bfe]"
+            />
+            <button
+              onClick={() => {
+                onLogin(pw);
+                setPw("");
+              }}
+              className="w-full px-2 py-1.5 text-xs rounded-md bg-[#4d6bfe] text-white font-medium hover:bg-[#3d5bf0] transition-colors"
+            >
+              登录
+            </button>
+          </div>
+        )}
+        <div className="text-[11px] text-gray-300 text-center">
+          RAG · FastAPI · Chroma · DeepSeek
+        </div>
       </div>
     </aside>
   );
