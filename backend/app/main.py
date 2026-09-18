@@ -3,18 +3,18 @@
 # 业务逻辑不在这里（配置在 config.py、鉴权在 auth.py、检索切片在 rag.py、Agent 编排在 agents.py），本文件只负责接收请求→调用→按 HTTP 返回。
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 # HTTPException：抛出带状态码的错误，FastAPI 自动转成 {"detail": "错误文案"} 的 JSON 响应
-from fastapi.middleware.cors import CORSMiddleware   # 跨域中间件（解决前端域名/端口与后端不同时浏览器的拦截）
+from fastapi.middleware.cors import CORSMiddleware  # 跨域中间件（解决前端域名/端口与后端不同时浏览器的拦截）
 from fastapi.responses import StreamingResponse, FileResponse
-from fastapi.staticfiles import StaticFiles   # 托管前端静态导出产物（见文件末尾）
+from fastapi.staticfiles import StaticFiles  # 托管前端静态导出产物（见文件末尾）
 # StreamingResponse：流式响应，打字机效果靠它；FileResponse：直接把磁盘文件作为响应体返回，供下载
-from pydantic import BaseModel   # 请求体校验：定义好字段和类型，FastAPI 自动校验并生成接口文档
+from pydantic import BaseModel  # 请求体校验：定义好字段和类型，FastAPI 自动校验并生成接口文档
 # MCP 工具加载成功时要现场重建带 MCP 工具的图，所以这里也要拿到构图函数
 from langchain.agents import create_agent as create_react_agent
 # LangGraph 流式会吐多种消息块，只想要“模型正文”那种，靠这个类做类型判断过滤
 from langchain_core.messages import AIMessageChunk
 import hashlib  # 计算文件内容的 MD5 指纹（用于内容查重和文件命名）
-import json      # 序列化 SSE 推送的数据、解析模型返回的工具参数
-import os        # 路径拼接、判断文件是否存在
+import json  # 序列化 SSE 推送的数据、解析模型返回的工具参数
+import os  # 路径拼接、判断文件是否存在
 
 # 下面几行是本项目自己的模块，依赖单向：config（资源）← auth（鉴权）/ rag（检索）← agents（编排）← main（组装+路由），不会循环引用。
 from .config import (client, collection, UPLOAD_DIR, ALLOWED_EXT, MAX_FILE_SIZE, MAX_TEXT_LENGTH,
@@ -22,9 +22,10 @@ from .config import (client, collection, UPLOAD_DIR, ALLOWED_EXT, MAX_FILE_SIZE,
 from .rag import search_knowledge_base, extract_text, split_text
 from .agents import (PERSONA, TOOLS, build_graph_system, get_mcp_tools, search_knowledge_base_lc,
                      lc_llm, lc_executor, load_skill)
-from .auth import verify_password, issue_token, get_identity, require_liang   # 步骤4：验口令+签发票+解析身份+亮哥守卫
+from .auth import verify_password, issue_token, get_identity, require_liang  # 步骤4：验口令+签发票+解析身份+亮哥守卫
+from .graph import agent_graph  # 步骤5：多 Agent 编排图（Supervisor + 3 worker 的 StateGraph），唯一生产路径
 
-app = FastAPI(title="AI Workspace")   # title 会显示在自动生成的接口文档页（启动后访问 /docs）上
+app = FastAPI(title="AI Workspace")  # title 会显示在自动生成的接口文档页（启动后访问 /docs）上
 
 # 跨域配置：端口不同即跨域，浏览器会拦截前端(3000)请求后端(8000)，后端须显式声明允许的来源。
 # 白名单从环境变量 CORS_ORIGINS 读（逗号分隔），本地默认放行 localhost:3000。
@@ -33,8 +34,8 @@ _cors_env = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in _cors_env.split(",") if o.strip()],
-    allow_methods=["*"],   # 允许所有 HTTP 方法（GET / POST / DELETE ...）
-    allow_headers=["*"],   # 允许所有请求头
+    allow_methods=["*"],  # 允许所有 HTTP 方法（GET / POST / DELETE ...）
+    allow_headers=["*"],  # 允许所有请求头
 )
 
 
@@ -75,7 +76,7 @@ class ChatRequest(BaseModel):
     后端无状态、不保存会话，前端每次发消息都把完整历史一起发来（上下文由前端维护，后端重启不丢历史）。
     messages 是 OpenAI 约定的消息数组：[{"role": "user"/"assistant", "content": "..."}, ...]
     """
-    messages: list   # 完整对话历史，最后一条就是用户刚发的这句话
+    messages: list  # 完整对话历史，最后一条就是用户刚发的这句话
 
 
 @app.post("/api/chat")
@@ -104,92 +105,49 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
 
     # ============================================================
     # 分支一：LangGraph 版（USE_LANGGRAPH = True，当前主力实现）
-    # 完整流程：改写问题 → 代码先检索 → 先发引用卡片 → 图内流式生成回答
+    # 步骤5b：完整流程已搬进多 Agent 图（graph.py）——Supervisor 路由 → 检索质检 worker（改写+检索+质检）
+    #         → 合成 worker（流式生成）。这里只做两件事：组装初始 State、消费图的双模式流转成 SSE。
     # ============================================================
     if USE_LANGGRAPH:
-        # ----- 第 1 步：把用户的口语化问题改写成适合检索的语句 -----
-        # 向量检索对措辞敏感：像“那餐补呢”这种缺主语的短句转向量后离文档很远、过不了阈值，会被误判成“库里没资料”；
-        # 改写成“餐补发放标准是什么？”这类独立完整、贴近文档措辞的句子才能命中。做法：带最近几轮历史单独调一次模型补全指代。
-        # 只取最近 4 条（messages[-4:]）是为控制成本和延迟——解指代通常只需上一两轮。
-        try:
-            rewrite = client.chat.completions.create(
-                model="deepseek-v4-flash",
-                # 这段 system 是“改写员”岗位说明，两个要点：① 只输出检索语句本身、不解释不回答（否则污染检索词）；
-                # ② 遇到闲聊/创作类请求（“讲个故事吧”）必须原样输出、不许改写——这条必须显式写，
-                # 因为提示词只能影响概率不能上锁，不给放行出口模型可能自由发挥（曾出现改写员直接把故事编出来）。
-                messages=[{"role": "system", "content": "结合对话历史，把用户最新问题改写成一句独立完整的检索语句（贴近知识库文档措辞）。只输出检索语句本身，不要解释。若最新问题不是知识库查询类问题（闲聊、创作、讲故事等），原样输出该问题，不要改写、不要回答它。"}] + messages[-4:],
-            )
-            # choices[0].message.content 是模型返回的文本；or "" 兜住返回 None 的情况，再 strip 掉首尾空白
-            rewritten = (rewrite.choices[0].message.content or "").strip()
-        except Exception:
-            rewritten = ""   # 改写失败（网络抖动、限流等）不影响主流程，下面用原话兜底
-        # 改写结果非空就用它检索，否则退回用户原话——改写只是“锦上添花”，不能让它成为单点故障
-        query = rewritten or messages[-1]["content"]
-        print(f"[LangGraph 检索] 原话: {messages[-1]['content']} → 改写: {query}")  # 观察点：后端终端能直接看到改写效果，排查检索问题先看这里
+        # 组装初始 State（黑板）：把这句话 + 身份喂进图，其余字段由各节点填充
+        init_state = {
+            "messages": messages,  # 完整对话历史
+            "query": messages[-1]["content"],  # 用户当前这句原话（合成时用它，不用改写句）
+            "is_liang": identity["is_liang"],  # 身份：决定检索过滤 + 人格风格
+            "trace": [],
+        }
 
-        # ----- 第 2 步：加载 MCP 外部工具，决定本次用哪张图 -----
-        mcp_tools = await get_mcp_tools()   # await：异步等待加载结果（首次会拉子进程，之后直接读缓存）
-        # MCP 工具与本地工具放进同一列表交给图，模型眼里没区别（都只看说明书决定用哪个）。加载成功就现场重建带全部工具的图，失败（[]）就复用 agents.py 预建的普通图。
-        # 🔴 load_skill 重建时必须一并带上：漏掉的话 MCP 加载成功（正常情况）反而让技能失效，且不报错——产品问题又变回“知识库里没有相关资料”。
-        # 步骤4d：一律按当前身份现场重建图（游客版/亮哥版），不再退回预建的静态 lg_graph——
-        # 那张写死"称呼亮哥"，游客走到会让图级(L135)和消息级(L169)提示词自相矛盾。
-        # 重建只是搭图对象、不调模型，开销极小；MCP 为空时 [本地工具]+[] 与原 lg_graph 工具集等价，降级行为不变。
-        active_graph = create_react_agent(lc_llm, [search_knowledge_base_lc, load_skill] + mcp_tools,
-                                          system_prompt=build_graph_system(identity["is_liang"]))
-
-        # ----- 第 3 步：代码先检索，把结果整理成编号资料（给模型）+ 引用卡片（给前端）-----
-        hits = search_knowledge_base(query, allow_private=identity["is_liang"])   # 身份过滤在 rag.py 召回层做，游客只出公共
-        sources = []         # 给前端的引用卡片数据
-        context_parts = []   # 给模型的编号资料文本
-        seen = set()         # 去重用的集合，记录已处理过的（文件名, 正文）组合
-        for doc, meta in hits:
-            # 去重：切片间有 50 字重叠，同一内容可能命中相邻两片；不去重前端会出现两张一样的卡片、模型也看到重复资料
-            key = (meta.get("filename"), doc)
-            if key in seen:
-                continue     # 已经收过，跳过
-            seen.add(key)
-            # id 从 1 开始递增：这个数字就是回答里 [1][2] 的编号，也是前端卡片的序号，两边靠它对应
-            sources.append({"id": len(sources) + 1, "filename": meta.get("filename", "未知来源"), "snippet": doc})
-            # 同一份内容拼成给模型看的格式，编号必须和 sources 里的完全一致
-            context_parts.append(f"[{len(sources)}] (来自: {meta.get('filename', '未知来源')})\n{doc}")
-        # 一条都没命中时给明确的“（无）”而非空串：规则 2 要求“资料为空时如实告知”，模型得看得见“为空”才会照做
-        material = "\n\n".join(context_parts) if context_parts else "（无）"
-
-        # ----- 第 4 步：定义流式生成器，边生成边推给前端 -----
         async def generate():
-            # 带 yield 的函数是“生成器”：每次吐一条数据后停在原地等下一次，契合“模型说一句、前端显示一句”；StreamingResponse 在背后不断拉取它发给浏览器。
-            # 🔴 必须声明 async def：函数体里有 async for（消费 LangGraph 异步流），普通 def 里写 async for 会报 SyntaxError。
-
-            # 🔴 先发引用卡片、后发正文——顺序关键：前端收到 sources 时正文还空，可先渲染卡片，用户不用等回答写完才看到出处。
-            # ensure_ascii=False：让中文按原样输出，否则会被转成 \uXXXX 转义序列（前端能解析，但抓包/终端里没法看）
-            yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
-
-            # 组装发给图的消息：系统提示词 + 完整历史 + 当前问题（带检索资料）。
-            # 🔴【用户问题】必须用原话 messages[-1]["content"]，不能用改写好的 query：改写句目标是“贴近文档措辞”，
-            # 对检索是优点、对回答是缺陷（会丢语气细节甚至改变原意），回灌等于偷偷替换用户提问
-            # （曾出事故：用户说“讲个故事”，改写模型编了个故事当检索词又被当用户问题回灌，牛来以为故事是用户写的）。
-            # 指代问题不用担心：完整历史在 messages[:-1] 里，回答模型自己解得开。
-            lg_messages = [{"role": "system", "content": build_graph_system(identity["is_liang"])}] + messages[:-1] + [
-                {"role": "user", "content": f"【编号资料】\n{material}\n\n【用户问题】\n{messages[-1]['content']}"}
-            ]
-            # 拼接顺序：messages[:-1] = 除最后一条外的全部历史（保持多轮上下文）；最后一条重写成“资料+问题”格式，检索结果就这样进提示词
+            # 🔴 双模式流式 stream_mode=["messages", "updates"] —— 这是 5b 保住 SSE 的关键：
+            #   updates  ：每个节点跑完吐一次它的 State 更新；用来【在 synthesize 出完答案后发准确溯源卡片】。
+            #   messages ：模型每吐一个 token 一条；用来发正文（打字机），但要【按节点名过滤】只放行 synthesize 的。
+            # 多模式下 astream 每次产出 (mode, chunk) 二元组：mode 是 "updates"/"messages"，chunk 随 mode 不同。
             try:
-                # astream = 异步流式执行图；stream_mode="messages" 表示每产生一条消息就吐出（模型每生成一个 token 一条），这是打字机效果的数据来源。
-                # recursion_limit=10 是防死循环护栏：“模型→工具→模型”循环最多转 10 圈强制中断，避免烧 token 又让请求挂着；新版 API 规定护栏在调用时传。
-                async for _chunk, metadata in active_graph.astream(
-                        {"messages": lg_messages},
-                            config = {"recursion_limit": 10}, stream_mode = "messages"):
-                    # 流里混着多种消息，只有 AIMessageChunk 且 content 非空的才是“模型正文”，其余全丢；
-                    # 不过滤的话工具调用的中间过程（一大段 JSON）会被当正文显示给用户。
-                    if isinstance(_chunk, AIMessageChunk) and _chunk.content:
-                        yield f"event: token\ndata: {json.dumps({'content': _chunk.content}, ensure_ascii=False)}\n\n"
+                async for mode, chunk in agent_graph.astream(
+                        init_state, config={"recursion_limit": 10}, stream_mode=["messages", "updates"]):
+                    if mode == "updates":
+                        # 🔴 卡片准确化：不再 eager 发 retrieve 的全部 top-3，改成【等 synthesize 出完答案】发它过滤后的
+                        #    cited_sources（只含答案真正引用到的片段）。所以卡片在正文之后到达（②甲）——准确溯源优先于秒出。
+                        # synthesize 的 updates 在它那批 token 全流完之后才到，天然满足"答案后发卡"。
+                        upd = chunk.get("synthesize")
+                        if upd is not None:
+                            cited = upd.get("cited_sources") or []
+                            if cited:  # 只在确有被引用的卡片时才发；空（没标/闲聊/天气）不发，前端自然无卡片
+                                yield f"event: sources\ndata: {json.dumps(cited, ensure_ascii=False)}\n\n"
+                    else:  # mode == "messages"
+                        # chunk 是 (消息块, 元数据)；三重过滤：synthesize 节点 + AIMessageChunk + content 非空。
+                        # 🔴 按 langgraph_node 过滤是关键：不然 retrieve 里的改写、tool 里的中间消息会漏进正文显示给用户。
+                        msg, meta = chunk
+                        if meta.get("langgraph_node") == "synthesize" and isinstance(msg,
+                                                                                     AIMessageChunk) and msg.content:
+                            yield f"event: token\ndata: {json.dumps({'content': msg.content}, ensure_ascii=False)}\n\n"
             except Exception:
-                # 生成中出错（超时/限流/图异常）：此时 HTTP 响应头已发出、改不了状态码，只能通过 SSE 事件告诉前端
+                # 生成中出错（超时/限流/图异常/超 recursion_limit）：HTTP 头已发出改不了状态码，只能用 SSE 事件告诉前端
                 yield f"event: error\ndata: {json.dumps({'message': '模型服务暂时不可用，请稍后再试'}, ensure_ascii=False)}\n\n"
-            # 无论成功失败都要发 done：前端靠它结束 loading 状态，漏发会让界面一直转圈
+            # 无论成败都发 done：前端靠它结束 loading，漏发会一直转圈
             yield "event: done\ndata: {}\n\n"
 
-        # media_type="text/event-stream" 是 SSE 的标准 MIME 类型，前端靠它识别这是个流式响应
+        # media_type="text/event-stream" 是 SSE 的标准 MIME 类型，前端靠它识别流式响应
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     # ============================================================
@@ -198,13 +156,13 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
     #       代价是没法流式：必须等循环全跑完才返回，所以没有打字机效果，整段回答一次性推给前端。
     # ============================================================
     elif USE_LANGCHAIN:
-        def generate():   # 这个分支里没有 async for，用普通 def 即可
+        def generate():  # 这个分支里没有 async for，用普通 def 即可
             try:
                 result = lc_executor.invoke({
                     # invoke 入参是字典，键名要和 agents.py 提示词模板的占位符一一对应：
                     "input": messages[-1]["content"],  # 对应模板里的 {input}：用户当前这句话
-                    "chat_history": messages[:-1],     # 对应 MessagesPlaceholder("chat_history")：其余作为历史
-                                                       # 直接传字典数组即可，框架会自动转成它内部的消息对象
+                    "chat_history": messages[:-1],  # 对应 MessagesPlaceholder("chat_history")：其余作为历史
+                    # 直接传字典数组即可，框架会自动转成它内部的消息对象
                 })
                 # result["output"] 是 Agent 循环跑完的最终回答文本（中间思考过程由 verbose=True 打到后端终端，不进回答）
                 yield f"event: token\ndata: {json.dumps({'content': result['output']}, ensure_ascii=False)}\n\n"
@@ -230,7 +188,7 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
             model="deepseek-v4-flash",
             messages=base_messages,
             tools=TOOLS,  # 关键参数：把工具说明书交给模型，用不用由它自己决定。
-                          # 不传这个参数，模型只会凭自己的知识回答（企业文档它不可能知道，只能编）
+            # 不传这个参数，模型只会凭自己的知识回答（企业文档它不可能知道，只能编）
         )
     except Exception:
         # 第一次调用就失败（网络/密钥/限流）：此时还没开始流式响应，可正常抛 HTTP 错误，FastAPI 转成 {"detail": ...} JSON，前端 !res.ok 分支会接住弹给用户。
@@ -243,11 +201,11 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
     tool_calls = getattr(choice, "tool_calls", None)
     print(f"[工具决策] {'调用 ' + tool_calls[0].function.name if tool_calls else '直接回答'}")  # 观察点：后端终端直接看到模型的决策结果
 
-    sources = []                 # 引用卡片数据（只有调了工具且检索到内容时才会有值）
-    final_messages = base_messages   # 第二次调用要用的消息列表；没调工具时它就是最终列表（不用再加东西）
+    sources = []  # 引用卡片数据（只有调了工具且检索到内容时才会有值）
+    final_messages = base_messages  # 第二次调用要用的消息列表；没调工具时它就是最终列表（不用再加东西）
     if tool_calls:
         # ----- 模型决定要查知识库：解析参数 → 执行工具 → 结果回填对话 -----
-        call = tool_calls[0]   # 本项目只注册了一个工具，取第一个即可；多工具场景要循环处理每一项
+        call = tool_calls[0]  # 本项目只注册了一个工具，取第一个即可；多工具场景要循环处理每一项
         # call.function.arguments 是模型生成的参数，但它是 JSON **字符串**（不是字典），必须 json.loads 反序列化才能取值。
         # 模型偶尔生成格式错误的 JSON，会在下面抛异常被最外层兜底接住。
         query = json.loads(call.function.arguments)["query"]
@@ -260,7 +218,7 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
         for doc, meta in hits:
             key = (meta.get("filename"), doc)
             if key in seen:
-                continue     # 重复内容跳过（切片重叠区可能导致同一内容命中两次）
+                continue  # 重复内容跳过（切片重叠区可能导致同一内容命中两次）
             seen.add(key)
             sources.append({"id": len(sources) + 1, "filename": meta.get("filename", "未知来源"), "snippet": doc})
             context_parts.append(f"[{len(sources)}] (来自: {meta.get('filename', '未知来源')})\n{doc}")
@@ -299,17 +257,17 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
         # bool(tool_calls)：tool_calls 可能是 None 或列表，统一转成 True/False 再序列化
         yield f"event: tool\ndata: {json.dumps({'called': bool(tool_calls)}, ensure_ascii=False)}\n\n"
         if sources:
-            yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"   # 有引用卡片就先发，前端可以立刻渲染出处
+            yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"  # 有引用卡片就先发，前端可以立刻渲染出处
 
         try:
             if tool_calls:
                 # 走工具路径：第二次调用模型，基于工具结果流式生成正式回答（打字机效果只在这条路径出现）。
                 response = client.chat.completions.create(
                     model="deepseek-v4-flash",
-                    messages=final_messages,   # 含工具结果的完整消息列表
-                    stream=True                # 开启流式：模型每生成一小段就产出一个 chunk
+                    messages=final_messages,  # 含工具结果的完整消息列表
+                    stream=True  # 开启流式：模型每生成一小段就产出一个 chunk
                 )
-                for chunk in response:   # 逐块消费（此分支同步，故 generate 是普通 def）
+                for chunk in response:  # 逐块消费（此分支同步，故 generate 是普通 def）
                     # delta 是本次增量。首个 chunk 常只含 role 无 content，须判空，否则前端会拼出 "null"。
                     if chunk.choices[0].delta.content:
                         piece = chunk.choices[0].delta.content
@@ -322,7 +280,7 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
             # 流已经开始，改不了 HTTP 状态码，只能用 SSE 事件通知前端
             yield f"event: error\ndata: {json.dumps({'message': '模型服务暂时不可用，请稍后再试'}, ensure_ascii=False)}\n\n"
 
-        yield "event: done\ndata: {}\n\n"   # 收尾事件：前端靠它关闭 loading
+        yield "event: done\ndata: {}\n\n"  # 收尾事件：前端靠它关闭 loading
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -352,7 +310,7 @@ async def upload(file: UploadFile = File(...), private: bool = Form(False), iden
         raise HTTPException(status_code=400, detail="文件太大（超过 5MB），请压缩或拆分后再上传")
 
     # ----- 3. 读取内容 + 计算内容指纹 -----
-    content = await file.read()   # 异步读出全部字节（await 期间不阻塞其他请求）
+    content = await file.read()  # 异步读出全部字节（await 期间不阻塞其他请求）
     # 第二道大小检查：某些客户端不传 size（file.size 为 None），读完后用 len(content) 兜底。
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="文件太大（超过 5MB），请压缩或拆分后再上传")
@@ -362,15 +320,15 @@ async def upload(file: UploadFile = File(...), private: bool = Form(False), iden
     # ----- 4. 提取文字 + 切片（先解析，后落盘）-----
     # 顺序关键：先确认能提取出文字再写盘入库，避免解析失败的文件留下垃圾。
     try:
-        text = extract_text(content, ext)   # 传内存字节，非磁盘路径（文件还没存盘）
+        text = extract_text(content, ext)  # 传内存字节，非磁盘路径（文件还没存盘）
     except Exception:
         # PDF 加密/损坏/格式伪装都会让解析抛异常，转成 400 + 明确文案，而非裸奔成 500。
         raise HTTPException(status_code=400, detail="文件解析失败：文件可能已损坏、加密或格式异常，请检查后重新上传")
     # 文字量闸门：决定入库成本的是文字量而非文件体积
     if len(text) > MAX_TEXT_LENGTH:
         raise HTTPException(status_code=400, detail="文件文字内容过多（超过 30 万字），请拆分成多份上传")
-    chunk_pairs = split_text(text)              # [(正文, {section, part}), ...]
-    chunks = [txt for txt, _m in chunk_pairs]   # 只取正文：后续 len(chunks)/documents=chunks 保持不变
+    chunk_pairs = split_text(text)  # [(正文, {section, part}), ...]
+    chunks = [txt for txt, _m in chunk_pairs]  # 只取正文：后续 len(chunks)/documents=chunks 保持不变
     if not chunks:
         # 解析成功却无文字 = 扫描版/图片型 PDF（无文字层），需 OCR，本项目不做。
         raise HTTPException(status_code=400, detail="未能提取到文字，可能是图片型/扫描件文件，暂不支持")
@@ -389,12 +347,12 @@ async def upload(file: UploadFile = File(...), private: bool = Form(False), iden
 
     # ----- 6. 同名覆盖：文件名相同但内容不同 = 新版本 -----
     # 不先清旧版，新旧切片会同时留在库里，检索时被一起捞出塞进提示词，模型看到矛盾规则。
-    overwritten = False   # 标记“新上传”还是“覆盖旧版”，返回给前端分流提示文案
-    old = collection.get(where={"filename": file.filename}, include=["metadatas"])   # 按元数据里的 filename 查出旧版的所有切片
+    overwritten = False  # 标记“新上传”还是“覆盖旧版”，返回给前端分流提示文案
+    old = collection.get(where={"filename": file.filename}, include=["metadatas"])  # 按元数据里的 filename 查出旧版的所有切片
     if old["ids"]:
         # 收集旧版磁盘文件名集合（set 去重：一个文件的切片共享同一 saved_as）
         old_saved = {m.get("saved_as") for m in old["metadatas"]}
-        collection.delete(ids=old["ids"])   # 删向量库里的旧切片
+        collection.delete(ids=old["ids"])  # 删向量库里的旧切片
         # 再清磁盘旧文件。顺序不能反：须等切片删完再查引用，cleanup 内部靠此判断防误删共享文件。
         cleanup_saved_files(old_saved)
         overwritten = True
@@ -405,20 +363,21 @@ async def upload(file: UploadFile = File(...), private: bool = Form(False), iden
     # 原文件名存进元数据 filename 字段，下载时还原。
     save_name = f"{content_hash}{ext}"
     save_path = os.path.join(UPLOAD_DIR, save_name)
-    with open(save_path, "wb") as f:   # "wb" 二进制写；with 保证自动关闭
+    with open(save_path, "wb") as f:  # "wb" 二进制写；with 保证自动关闭
         f.write(content)
 
     # ----- 8. 写入向量库 -----
     # upsert：id 存在则更新、否则插入（比 insert 安全，不会因 id 重复报错）。
     collection.upsert(
-        documents=chunks,   # 切片正文：Chroma 自动转成向量存起来（embedding）
-        ids=ids,            # 每片的主键，和 documents 一一对应
+        documents=chunks,  # 切片正文：Chroma 自动转成向量存起来（embedding）
+        ids=ids,  # 每片的主键，和 documents 一一对应
         # 元数据：记录每片来自哪个文件、磁盘名是什么。[字典] * N 复制成每片一份。
         # 不参与向量计算，但用于过滤查询，也是前端引用卡片显示文件名的来源。
         # 每片元数据 = 片级(section, part) + 文件级(filename, saved_as)
-        metadatas=[{**m, "filename": file.filename, "saved_as": save_name, "private": is_private} for _txt, m in chunk_pairs],
+        metadatas=[{**m, "filename": file.filename, "saved_as": save_name, "private": is_private} for _txt, m in
+                   chunk_pairs],
     )
-    print(f"知识库切片总数: {collection.count()}")   # 观察点：终端可看到入库后切片总数
+    print(f"知识库切片总数: {collection.count()}")  # 观察点：终端可看到入库后切片总数
 
     return {"filename": file.filename, "saved_as": save_name, "size": len(content),
             "chunks": len(chunks), "overwritten": overwritten, "private": is_private}
@@ -433,7 +392,7 @@ async def list_files(identity: dict = Depends(get_identity)):
     故换浏览器/清缓存/重启服务清单都不会错。
     """
     if collection.count() == 0:
-        return {"files": []}   # 空库直接返回空列表
+        return {"files": []}  # 空库直接返回空列表
     # collection.get 不带条件 = 取所有切片元数据（只取 metadatas 不取正文，少传数据）
     data = collection.get(include=["metadatas"])
     # 库里存“切片”，前端要“文件”维度，故按 filename 聚合：统计每个文件名出现次数 = 切片数。
@@ -462,11 +421,11 @@ def cleanup_saved_files(saved_names):
     """
     for name in saved_names:
         if not name:
-            continue   # 跳过 None/空串：早期数据可能没 saved_as，os.path.join 遇 None 会崩
+            continue  # 跳过 None/空串：早期数据可能没 saved_as，os.path.join 遇 None 会崩
         # 按元数据 saved_as 查库里还有多少切片引用这个磁盘文件，0 条才能删
         if len(collection.get(where={"saved_as": name})["ids"]) == 0:
             path = os.path.join(UPLOAD_DIR, name)
-            if os.path.exists(path):   # 文件可能早就被手动删了，exists 判断避免 os.remove 抛 FileNotFoundError
+            if os.path.exists(path):  # 文件可能早就被手动删了，exists 判断避免 os.remove 抛 FileNotFoundError
                 try:
                     os.remove(path)
                 except OSError as e:
@@ -477,7 +436,7 @@ def cleanup_saved_files(saved_names):
 
 # 禁删名单：知识库演示样本，只允许“上传同名覆盖更新”，不允许删除（误删会导致 RAG 演示当场失效）。
 # 拦在后端而非前端：后端才是真相之源，绕过页面直接调 DELETE 接口时前端限制形同虚设。
-PROTECTED_FILES = {"公司制度.txt"}   # 用集合：in 判断更快，语义表示“一堆不重复的名字”
+PROTECTED_FILES = {"公司制度.txt"}  # 用集合：in 判断更快，语义表示“一堆不重复的名字”
 
 
 @app.delete("/api/files/{filename}")
@@ -493,16 +452,16 @@ async def delete_file(filename: str, _identity: dict = Depends(require_liang)):
         # detail 同时给出替代方案（上传同名即可覆盖），而非冷冰冰的“不允许”
         raise HTTPException(status_code=403,
                             detail=f"「{filename}」是知识库的演示样本文件，不支持删除；需要更新内容时，上传同名文件即可自动覆盖旧版")
-    before = collection.count()   # 记下删除前切片总数，删完相减得删除数（用于 404 判断和返回）
+    before = collection.count()  # 记下删除前切片总数，删完相减得删除数（用于 404 判断和返回）
     # 删前须先捞出 saved_as：切片一删元数据就没了，再查不到该清哪个物理文件
     data = collection.get(where={"filename": filename}, include=["metadatas"])
-    saved_names = {m.get("saved_as") for m in data["metadatas"]}   # 集合推导式：顺带完成去重
-    collection.delete(where={"filename": filename})   # where = 按元数据条件批量删除（一次删掉该文件的所有切片）
+    saved_names = {m.get("saved_as") for m in data["metadatas"]}  # 集合推导式：顺带完成去重
+    collection.delete(where={"filename": filename})  # where = 按元数据条件批量删除（一次删掉该文件的所有切片）
     deleted = before - collection.count()
     if deleted == 0:
         # 一个切片都没删 = 库里没这个文件。返回 404 而非“删除成功 0 条”，前端才能准确提示。
         raise HTTPException(status_code=404, detail="知识库中没有这个文件")
-    cleanup_saved_files(saved_names)   # 切片已删完，这时查“还有谁引用这个物理文件”才是准的
+    cleanup_saved_files(saved_names)  # 切片已删完，这时查“还有谁引用这个物理文件”才是准的
     print(f"知识库切片总数: {collection.count()}")
     return {"filename": filename, "deleted_chunks": deleted}
 
@@ -531,7 +490,7 @@ async def download_file(filename: str, identity: dict = Depends(get_identity)):
         # 元数据说文件在、磁盘却找不到（被手动删/目录被清）—— 数据不一致，也如实报
         raise HTTPException(status_code=404, detail="服务器上的原文件已丢失，请重新上传")
     # FileResponse 直接把磁盘文件作为响应体返回。filename 指定浏览器保存名 = 原文件名
-    #（中文名自动 URL 编码），不传则浏览器用 URL 末段或哈希名保存，用户看不懂。
+    # （中文名自动 URL 编码），不传则浏览器用 URL 末段或哈希名保存，用户看不懂。
     return FileResponse(file_path, filename=filename)
 
 
