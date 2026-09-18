@@ -15,14 +15,12 @@ import re  # 准确溯源：从答案正文里正则抽出被引用的编号 [n]
 from typing import TypedDict, Annotated
 
 from langgraph.graph import StateGraph, START, END  # 有向图三件套：建图器 + 起点 + 终点常量
-from langchain.agents import \
-    create_agent as create_react_agent  # 5e：工具 worker 起 ReAct 子图（1.x 新家在 create_agent，参数名 system_prompt）
+from langchain.agents import create_agent as create_react_agent  # 5e：工具 worker 起 ReAct 子图（1.x 新家在 create_agent，参数名 system_prompt）
 
 # 改写员用裸 OpenAI SDK（非流式、不进 messages 流），检索复用 rag.py，人格/模型复用 agents.py
 from .config import client
 from .rag import _retrieve_once, _grade_and_filter  # 5c：用更细的原子操作，自己做质检 + 有界重查（search_knowledge_base 是"查一次即用"的封装，这里不用它）
-from .agents import build_synth_system, lc_llm, get_mcp_tools, \
-    load_skill  # 5f：合成改用专属提示词（含注入护栏），不再用给旧架构写的 build_graph_system
+from .agents import build_synth_system, lc_llm, get_mcp_tools, load_skill
 
 
 # ===== State（黑板）：贯穿所有节点的共享状态 =====
@@ -221,7 +219,6 @@ async def tool_node(state: AgentState) -> dict:
     trace = []  # 🔴并行改造：只收本节点【新增】的 span；与 retrieve 并行写入时由 reducer 合并，互不覆盖
     try:
         mcp_tools = await get_mcp_tools()  # 异步加载（首次拉子进程，之后读缓存）；失败返回 []
-        # 🔴 不含 search_knowledge_base_lc：KB 检索是 retrieve 节点的专属职责（有质检 + 引用卡片），工具节点不重复检索
         tools = mcp_tools + [load_skill]
         react = create_react_agent(lc_llm, tools, system_prompt=_TOOL_SYSTEM)
         # 独立 config：不继承父图流式回调（子 agent 中间 token 不窜进正文）；recursion_limit 给子循环也上防死循环护栏

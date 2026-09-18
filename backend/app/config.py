@@ -40,9 +40,6 @@ CHUNK_OVERLAP = 50   # 相邻片重叠 50 字：避免硬切把句子拦腰截�
 
 # ===== 架构开关（学习对照用）=====
 # 同一个 /api/chat 保留三套实现（手写版 / LangChain / LangGraph），靠开关决定走哪套，方便对照“框架做了什么”。
-# 优先级由 main.py 的 if/elif/else 决定：USE_LANGGRAPH > USE_LANGCHAIN > 手写版。生产只留一套。
-USE_LANGCHAIN = False  # True：/api/chat 交给 LangChain Agent，框架自动完成“决定调工具→执行→回填→生成”
-USE_LANGGRAPH = True   # True：交给 LangGraph（当前生效），流式打字机 + 引用卡片齐全
 USE_MCP = True         # True：加载外部 MCP 工具服务（网页抓取、天气），失败自动降级为“只有知识库工具”，不影响启动
 # ===== 鉴权配置（步骤4：JWT + 双身份）=====
 # 🔴 三项全从环境变量读，绝不写死进代码或前端包——密钥一旦进前端，谁都能伪造"亮哥门票"。

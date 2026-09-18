@@ -86,7 +86,6 @@ def load_skill(skill_name: str) -> str:
     """按名字取出一个技能的完整正文，作为工具返回值喂回给模型。
 
     参数 skill_name：模型在工具调用里传的技能名；返回：SKILL.md 正文（不含 YAML 头）。
-    出错时返回一句说明性“人话”、绝不返回空串（同 search_knowledge_base_lc）：模型看到明确失败说明才会如实告知或换办法，空串会被当成“工具坏了”甚至瞎编。
     """
     available = list_skills()
 
