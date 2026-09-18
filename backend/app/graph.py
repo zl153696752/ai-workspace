@@ -19,8 +19,8 @@ from langchain.agents import create_agent as create_react_agent  # 5e：工具 w
 
 # 改写员用裸 OpenAI SDK（非流式、不进 messages 流），检索复用 rag.py，人格/模型复用 agents.py
 from .config import client
-from .rag import _retrieve_once, _grade_and_filter  # 5c：用更细的原子操作，自己做质检 + 有界重查（search_knowledge_base 是"查一次即用"的封装，这里不用它）
-from .agents import build_synth_system, lc_llm, get_mcp_tools, load_skill
+from .rag import _retrieve_once, _grade_and_filter, build_kb_manifest  # 5c：用更细的原子操作，自己做质检 + 有界重查（search_knowledge_base 是"查一次即用"的封装，这里不用它）
+from .agents import build_synth_system, lc_llm, get_mcp_tools, load_skill, build_tools_manifest
 
 
 # ===== State（黑板）：贯穿所有节点的共享状态 =====
@@ -30,6 +30,7 @@ class AgentState(TypedDict, total=False):
     query: str  # 用户当前这句原话（= messages[-1]["content"]）
     is_liang: bool  # 身份：True 亮哥 / False 游客（决定检索过滤 + 人格风格）
     intents: list  # Supervisor 判定的意图集合（可多个）：kb / tool / chitchat。复合问题如"报销标准+天气"→ ["kb","tool"]
+    scope: str  # Supervisor 判定的作用域：company(公司库专属) / general(通用·全国标准) / both(两者都要)。只对 kb 类问题有意义，供改写(D)、合成(E)用
     rewritten: str  # 改写后的检索句（检索质检 worker 填）
     hits: list  # 质检后的资料 [(正文, 元数据), ...]
     material: str  # 拼好的【编号资料】文本（喂给合成）
@@ -41,56 +42,77 @@ class AgentState(TypedDict, total=False):
     trace: Annotated[list, operator.add]  # 并行 fan-in：两 worker 并发追加 span，用 + 合并（不互相覆盖）→ 所以节点只返回【增量】
 
 
-# ===== Supervisor 意图分类提示词（多标签：一句话可能既要查库又要调工具）=====
-# 🔴 拿不准至少含 kb：漏检(该查没查)会让模型凭记忆瞎编=严重事故；白检(闲聊查一次)只是浪费=轻微。代价不对称，默认偏 kb。
-_INTENT_SYSTEM = (
-    "你是企业知识库助手的意图分类器。判断用户这句话【需要哪些】处理方式，输出所有适用的标签，多个标签用加号+连接，不要解释、不要多余标点：\n"
-    "- kb：要查企业知识库才能答的事实问题（公司制度/福利/流程、产品型号参数价格、售后保修政策等）。\n"
-    "- tool：要调外部工具才能完成（查天气、抓网页、当前时间；以及'某功能怎么用/如何操作'这类要调产品指南技能的）。\n"
-    "- chitchat：闲聊、打招呼、通用常识、创作/写东西/讲故事/翻译/算数等，不依赖本企业资料、也不需要工具。\n"
-    "规则：一句话可能同时需要多个（既问公司制度又问天气 → kb+tool）；chitchat 通常单独出现；拿不准时至少包含 kb。\n"
-    "示例：\n"
-    "入职满一年有几天年假 → kb\n"
-    "N7 Pro 多少钱 → kb\n"
-    "明天上海天气怎么样 → tool\n"
-    "怎么上传知识库文档 → tool\n"
-    "公司差旅报销标准是多少，顺便看下明天上海天气 → kb+tool\n"
-    "我们的年假制度，还有帮我抓一下这个网页 example.com → kb+tool\n"
-    "你好啊 → chitchat\n"
-    "讲个笑话 → chitchat\n"
-    "帮我写首关于秋天的诗 → chitchat"
-)
+# ===== Supervisor 意图+作用域分类提示词（动态：注入 KB 范围清单 + 工具能力清单，让分类器不再"盲判"）=====
+# 🔴 拿不准至少含 kb、scope 拿不准填 company：漏检(该查没查)会让模型凭记忆瞎编=严重事故；白检(闲聊查一次)只是浪费=轻微。代价不对称，默认偏 kb/company。
+def build_intent_system(is_liang: bool) -> str:
+    """Supervisor 分类提示词。为什么是函数不是常量：KB 清单要按身份动态生成（游客看不到私有主题），
+    工具清单也是运行时聚合的。注入这两份清单，Supervisor 才知道"库里有什么、有哪些工具"，才判得准 intent + scope。"""
+    kb_manifest = build_kb_manifest(allow_private=is_liang)   # 亮哥含私有节、游客只含公开节
+    tools_manifest = build_tools_manifest()                    # MCP 工具 + 技能，自动聚合
+    return (
+        "你是企业知识库助手的意图分类器。判断用户这句话【需要哪些处理方式】(意图，可多选) 和【问的是哪个范围】(作用域，单选)。\n\n"
+        f"【知识库范围】(库里实际有这些主题，据此判断问题是否属于公司资料)：\n{kb_manifest}\n\n"
+        f"【可用工具】(这些能力靠调工具完成)：\n{tools_manifest}\n\n"
+        "一、意图 intents(可多选，多个用加号+连接)：\n"
+        "- kb：需要事实依据才能答的问题——含公司专属事实(制度/福利/流程、产品型号参数价格、售后保修，对照【知识库范围】)和通用事实/全国标准(如他厂产品、全国法定节假日)。\n"
+        "- tool：要靠【可用工具】才能完成(查天气、抓网页、当前时间、产品使用指南技能等)。\n"
+        "- chitchat：纯社交与创作——闲聊、打招呼、讲笑话、写诗/写东西、翻译、算数，不需要外部事实依据。\n\n"
+        "二、作用域 scope(仅当意图含 kb 时有意义，单选)：\n"
+        "- company：答案在【知识库范围】里(公司专属内容)。\n"
+        "- general：答案是通用事实/全国标准，【知识库范围】里没有对应主题。\n"
+        "- both：既对应【知识库范围】里的公司制度、又有通行的全国/通用标准(典型：年假、病假、加班费——公司有规定、国家有法定标准)。\n"
+        "- 纯 tool / chitchat 时 scope 填 general。\n"
+        "⚠️ 判 scope 只认上面的【知识库范围】清单、不认下面的示例：清单里【有】对应主题才可能 company/both，清单里【没有】的一律 general——哪怕示例里出现过类似问法（示例是按能看全部库的管理员身份写的，只演示输出格式，未必匹配你当前身份能看到的范围）。\n\n"
+        "三、规则：一句话可能要多个意图(既问公司制度又问天气→kb+tool)；拿不准意图时至少含 kb；拿不准 scope 时填 company(宁可查库也别漏)。\n\n"
+        "四、输出格式：`意图 作用域`，中间一个空格，不要解释、不要多余标点。例：`kb both`、`kb+tool company`、`tool general`、`chitchat general`。\n\n"
+        "示例：\n"
+        "年假几天？ → kb both\n"
+        "入职满一年有几天年假 → kb both\n"
+        "公司差旅报销流程怎么走 → kb company\n"
+        "N7 Pro 多少钱 → kb company\n"
+        "iPhone 17 什么时候发布 → kb general\n"
+        "全国法定节假日有哪些 → kb general\n"
+        "明天上海天气怎么样 → tool general\n"
+        "怎么上传知识库文档 → tool general\n"
+        "公司报销标准是多少，顺便看下明天上海天气 → kb+tool company\n"
+        "你好啊 → chitchat general\n"
+        "讲个笑话 → chitchat general\n"
+        "帮我写首关于秋天的诗 → chitchat general"
+    )
 
 
 # ===== 节点 1：Supervisor（多标签意图路由 + catch-all 安全默认）=====
 def supervisor_node(state: AgentState) -> dict:
-    """Supervisor：一次轻量模型调用把用户这句判成 kb / tool / chitchat 的【集合】（可多个），写进 State.intents。
-    '轻量'指输入短、只输出标签、temperature=0 的廉价调用。
-    🔴 catch-all 安全默认：调用失败 / 一个标签都认不出 → 回落 ["kb"]（去检索）。漏检比白检代价大。"""
+    """Supervisor：一次轻量模型调用把用户这句判成 intents(kb/tool/chitchat 集合) + scope(company/general/both)，写进 State。
+    提示词按身份动态注入 KB+工具清单(build_intent_system)，让分类不再盲判。'轻量'指输入短、只输出标签、temperature=0。
+    🔴 catch-all 安全默认：调用失败/认不出 → intents 回落 ["kb"]、scope 回落 "company"(去查库、KB-grounded，绝不放模型 freelance)。"""
     query = state["query"]
+    is_liang = state.get("is_liang", False)
     try:
         resp = client.chat.completions.create(
             model="deepseek-v4-flash",
-            messages=[{"role": "system", "content": _INTENT_SYSTEM},
+            messages=[{"role": "system", "content": build_intent_system(is_liang)},   # 动态提示词
                       {"role": "user", "content": query}],
             temperature=0,  # 分类要稳定可复现，温度归零
         )
         raw = (resp.choices[0].message.content or "").strip().lower()
     except Exception as e:
-        # 降级留痕：意图分类炸了不阻断主流程，回落安全默认 ["kb"]，异常记进 trace
-        print(f"[Supervisor] 意图分类异常，回落 kb：{e}")
-        return {"intents": ["kb"],
-                "trace": [{"node": "supervisor", "degraded": True, "reason": str(e)}]}  # reducer 自己拼全量，节点只返回增量
-    # 解析多标签：模型可能输出 "kb+tool" / "kb tool" / "kb,tool"，统一把 + 和 , 换成空格再切；
-    # 只保留认识的三个标签，且按 ("kb","tool","chitchat") 固定顺序输出（去重 + 顺序确定，方便路由和看日志）
+        # 降级留痕：分类炸了不阻断主流程，回落安全默认 kb/company，异常记进 trace
+        print(f"[Supervisor] 意图分类异常，回落 kb/company：{e}")
+        return {"intents": ["kb"], "scope": "company",
+                "trace": [{"node": "supervisor", "degraded": True, "reason": str(e)}]}
+    # 解析：模型输出形如 "kb+tool both"。把 + 和 , 换成空格切成 token；
+    # intents 只认 kb/tool/chitchat 前缀(按固定顺序去重)，scope 只认 company/general/both——两组词互不撞车，各挑各的。
     tokens = raw.replace(",", " ").replace("+", " ").split()
     intents = [t for t in ("kb", "tool", "chitchat") if any(tok.startswith(t) for tok in tokens)]
-    if not intents:  # catch-all：一个都没认出来（空串/乱输出）→ 安全回落
+    if not intents:  # catch-all：一个意图都没认出来(空串/乱输出) → 安全回落
         intents = ["kb"]
-    # 观察点：后端终端直接看到"这句被判成哪些意图"，排查路由先看这里
-    print(f"[Supervisor] intents={intents}（模型原始输出={raw!r}）query={query!r}")
-    return {"intents": intents,
-            "trace": [{"node": "supervisor", "intents": intents, "raw": raw}]}  # reducer 自己拼全量，节点只返回增量
+    # scope 认不出默认 company：和 intent 的 catch-all 一个哲学，宁可查库、KB-grounded，也不放模型去编通用答案(年假 bug 的病根)
+    scope = next((s for s in ("both", "company", "general") if any(tok.startswith(s) for tok in tokens)), "company")
+    # 观察点：后端终端直接看到"这句被判成哪些意图 + 什么作用域"，排查路由先看这里
+    print(f"[Supervisor] intents={intents} scope={scope}（模型原始输出={raw!r}）query={query!r}")
+    return {"intents": intents, "scope": scope,
+            "trace": [{"node": "supervisor", "intents": intents, "scope": scope, "raw": raw}]}
 
 
 def route_intent(state: AgentState) -> list:
@@ -111,14 +133,27 @@ def route_intent(state: AgentState) -> list:
 
 
 # ===== 检索质检 worker 的两阶段改写（辅助函数）=====
-def _rewrite_for_retrieval(messages: list, original_query: str) -> str:
+def _scope_rewrite_guard(scope: str, kb_manifest: str) -> str:
+    """D：scope=company/both 时返回"以知识库说明书为准"的改写约束（附 KB 范围清单）；general 返回空串（不约束）。
+    🔴 不写死"口语 vs 正式"——改成【照清单措辞来】：库里怎么称呼概念就怎么用，避免漂成库里根本没有的术语而检索不中。"""
+    if scope in ("company", "both"):
+        return (f"\n\n【改写约束·必须遵守】这是查公司内部资料。知识库实际涵盖的主题(连同库里的措辞)如下：\n{kb_manifest}\n"
+                "请把查询改写成【贴近上面主题所用措辞】的形式：库里怎么称呼这个概念你就怎么用——"
+                "库里写'年假'你就用'年假'，库里若用专业术语你就跟着用专业术语。"
+                "不要凭空替换成上面清单里没出现的术语(无论更正式还是更宽泛)，那会偏离库里实际用词、导致检索不中。"
+                "可补充'公司/员工/内部'等限定词帮助定位。")
+    return ""
+
+def _rewrite_for_retrieval(messages: list, original_query: str, scope: str = "company", kb_manifest: str = "") -> str:
     """改写#1（指代消解）：结合最近 4 轮，把口语化/带指代的问题补全成独立完整的检索句。
+    🔴 D：受 Supervisor 的 scope 约束——company/both 时拼上"清单引导护栏"，照知识库实际措辞改写、防漂移。
     用裸 client（非流式、不进 messages 流，改写句不该漏给用户）；失败退回原话，绝不做单点故障。"""
+    guard = _scope_rewrite_guard(scope, kb_manifest)   # general 时为空串，不干预
     try:
         rewrite = client.chat.completions.create(
             model="deepseek-v4-flash",
             messages=[{"role": "system",
-                       "content": "结合对话历史，把用户最新问题改写成一句独立完整的检索语句（贴近知识库文档措辞）。只输出检索语句本身，不要解释。若最新问题不是知识库查询类问题（闲聊、创作、讲故事等），原样输出该问题，不要改写、不要回答它。"}] + messages[
+                       "content": "结合对话历史，把用户最新问题改写成一句独立完整的检索语句（贴近知识库文档措辞）。只输出检索语句本身，不要解释。若最新问题不是知识库查询类问题（闲聊、创作、讲故事等），原样输出该问题，不要改写、不要回答它。" + guard}] + messages[
                          -4:],
         )
         return (rewrite.choices[0].message.content or "").strip() or original_query
@@ -126,15 +161,24 @@ def _rewrite_for_retrieval(messages: list, original_query: str) -> str:
         return original_query
 
 
-def _rewrite_corrective(prev_query: str) -> str:
+def _rewrite_corrective(prev_query: str, scope: str = "company", kb_manifest: str = "") -> str:
     """改写#2（Self-CRAG 纠正性重写）：第一次没检索到相关内容时，换个角度重述再试【一次】。
-    策略：① 更宽泛的上位概念；② 同义/近义术语；③ 只保留最核心的实体名词。
+    🔴 D：策略随 scope 变——company/both 时【禁止】往'更宽泛上位概念'走（那正是漂成法规术语的元凶），
+    改成'照知识库清单的实际措辞换角度'；general 时才用原来的宽泛化策略。
     🔴 若模型判断这问题压根不该查知识库（闲聊/创作/常识），输出 SKIP → 返回空串，避免为闲聊白跑第二次检索。"""
+    guard = _scope_rewrite_guard(scope, kb_manifest)
+    if guard:  # company/both：照清单措辞换角度，别宽泛化
+        strategy = ("上一次在企业知识库里没查到相关内容。请换个角度重述，只输出新检索句、不要解释。可尝试："
+                    "① 换成清单主题里出现过的近义措辞；② 补充'公司/员工/内部规定'等限定词；③ 只保留最核心的实体名词。"
+                    + guard)
+    else:      # general：用原来的宽泛化策略（本就不指望命中公司库）
+        strategy = ("上一次用某个检索式在企业知识库里没找到相关内容。请把用户的问题换一个检索角度重新表述，只输出新的检索语句、不要解释。"
+                    "可尝试：① 更宽泛的上位概念；② 同义/近义术语；③ 只保留最核心的实体名词。")
     try:
         rewrite = client.chat.completions.create(
             model="deepseek-v4-flash",
             messages=[{"role": "system",
-                       "content": "上一次用某个检索式在企业知识库里没找到相关内容。请把用户的问题换一个检索角度重新表述，只输出新的检索语句、不要解释。可尝试：① 更宽泛的上位概念；② 同义/近义术语；③ 只保留最核心的实体名词。如果你判断这个问题根本不需要查知识库（如闲聊、创作、讲故事、常识问答），只输出：SKIP"},
+                       "content": strategy + "如果你判断这个问题根本不需要查知识库（如闲聊、创作、讲故事、常识问答），只输出：SKIP"},
                       {"role": "user", "content": prev_query}],
         )
         out = (rewrite.choices[0].message.content or "").strip()
@@ -153,10 +197,14 @@ def retrieve_node(state: AgentState) -> dict:
     降级留痕：重查决策 + 判定级别写进 trace；检索异常写 degraded + trace，material 兜底"（无）"。"""
     messages = state["messages"]
     is_liang = state.get("is_liang", False)
+    scope = state.get("scope", "company")  # D：Supervisor 判的作用域，用来约束改写别漂成法规术语
+    # D：company/both 才用清单引导改写；general 不建、省 token（build_kb_manifest 按 count 缓存，很便宜）
+    kb_manifest = build_kb_manifest(is_liang) if scope in ("company", "both") else ""
     trace = []  # 🔴并行改造：只收本节点【新增】的 span，不再拷贝全量；返回后由 trace 的 reducer(operator.add) 拼进 State
 
-    # ① 改写#1
-    query = _rewrite_for_retrieval(messages, state["query"])
+    # ① 改写#1（受 scope 约束：company/both 照知识库清单的实际措辞改写，别漂成库里没有的术语）
+    query = _rewrite_for_retrieval(messages, state["query"], scope, kb_manifest)
+    print(f"[改写#1] scope={scope} 原话={state['query']!r} → 检索句={query!r}")  # D 观察点：看漂移有没有被堵住
 
     try:
         # ② 第一次检索 + 质检（grade ∈ correct / incorrect / unavailable）
@@ -166,7 +214,7 @@ def retrieve_node(state: AgentState) -> dict:
         # ⚠️ 5c 阶段 Supervisor 还是桩（固定 kb），闲聊也会走到这里；靠改写#2 的 SKIP 避免为闲聊白跑第二次检索。
         #    5d 真意图路由后，闲聊直接进 synthesize、压根不进 retrieve，这条浪费就没了。
         if grade == "incorrect":
-            query2 = _rewrite_corrective(query)
+            query2 = _rewrite_corrective(query, scope, kb_manifest)
             if query2 and query2 != query:
                 print(f"[Self-CRAG] 首查判定不相关，换角度重查：{query!r} → {query2!r}")
                 kept2, grade2 = _grade_and_filter(_retrieve_once(query2, allow_private=is_liang))
@@ -245,7 +293,9 @@ def synthesize_node(state: AgentState) -> dict:
     messages = state["messages"]
     material = state.get("material", "（无）")
     tool_result = state.get("tool_result", "")
-    system = build_synth_system(state.get("is_liang", False))  # 按身份动态生成（游客版/亮哥版）+ 注入护栏
+    scope = state.get("scope", "company")  # E：Supervisor 判的作用域，决定合成怎么分流（company/general/both）
+    has_kb = "kb" in state.get("intents", [])  # E补丁：只有 kb 意图才套作用域话术；纯工具/闲聊走中性话术，免得误报“没有公司规定”
+    system = build_synth_system(state.get("is_liang", False), scope, has_kb)  # 按身份 + 作用域 + 是否有KB 动态生成
     # 🔴【用户问题】用原话 state["query"]，不能用改写句（改写句贴近文档措辞，回灌会丢语气/改原意）
     user_content = f"【编号资料】\n{material}\n\n【用户问题】\n{state['query']}"
     if tool_result:
@@ -272,7 +322,7 @@ def synthesize_node(state: AgentState) -> dict:
                       "n_sources": len(all_sources), "used_ids": used_ids, "cited": cited})
         if not cited:
             print(f"[合成] ⚠️ citation_miss：检索到 {len(all_sources)} 条资料却未标任何 [n]（C2 漏标候选，计入分子）")
-    print(f"[合成] used_ids={used_ids} → 发 {len(cited_sources)}/{len(all_sources)} 张溯源卡片")
+    print(f"[合成] scope={scope} used_ids={used_ids} → 发 {len(cited_sources)}/{len(all_sources)} 张溯源卡片")
 
     return {"answer": answer, "used_ids": used_ids, "cited_sources": cited_sources, "trace": trace}
 

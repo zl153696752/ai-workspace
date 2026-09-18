@@ -118,6 +118,48 @@ def _filter_private(hits: list, allow_private: bool) -> list:
     return [(cid, doc, meta) for cid, doc, meta in hits if not meta.get("private", False)]
 
 
+# ===== 知识库范围清单（步骤7 补充：给 Supervisor 判 scope 用）=====
+# 按 (库大小, 身份) 缓存：库一变（count 变化）就重建亮哥版(all)和游客版(public)两份
+_KB_MANIFEST_CACHE = {"count": -1, "all": "", "public": ""}
+
+
+def _manifest_lines(allow_private: bool) -> str:
+    """扫全库元数据，按文件聚合去重的小节标题，拼成"文件：小节1 / 小节2"清单。
+    allow_private=False（游客）时跳过私有片——清单里不出现私有文件，Supervisor 自然把私有话题判成 general。"""
+    metas = collection.get(include=["metadatas"]).get("metadatas", [])
+    files, order, private_files = {}, [], set()
+    for m in metas:
+        is_priv = bool(m.get("private", False))
+        fn = m.get("filename", "未知")
+        if is_priv:
+            private_files.add(fn)
+        if not allow_private and is_priv:
+            continue                                   # 游客：私有片不进清单
+        if fn not in files:
+            files[fn] = []
+            order.append(fn)                           # 记住文件出现顺序
+        sec = (m.get("section") or "").strip()
+        if sec and sec not in files[fn]:
+            files[fn].append(sec)                      # 小节去重
+    lines = []
+    for fn in order:
+        name = fn[:-4] if fn.endswith(".txt") else fn  # 去掉 .txt 后缀更好读
+        tag = "（内部）" if fn in private_files else ""
+        secs = " / ".join(files[fn]) if files[fn] else "（无小节）"
+        lines.append(f"- {name}{tag}：{secs}")
+    return "\n".join(lines)
+
+
+def build_kb_manifest(allow_private: bool) -> str:
+    """对外入口：按 count 缓存，增删文档才重建（和 _refresh_bm25_cache 一个套路）。"""
+    n = collection.count()
+    if _KB_MANIFEST_CACHE["count"] != n:
+        _KB_MANIFEST_CACHE["count"] = n
+        _KB_MANIFEST_CACHE["all"] = _manifest_lines(allow_private=True)
+        _KB_MANIFEST_CACHE["public"] = _manifest_lines(allow_private=False)
+    return _KB_MANIFEST_CACHE["all" if allow_private else "public"]
+
+
 def _retrieve_once(query: str, allow_private: bool = False) -> list:
     """跑一遍完整混合检索：向量召回 + BM25 召回 → RRF 融合 → 精排，返回 [(相关性分数, 正文, 元数据), ...]。
 

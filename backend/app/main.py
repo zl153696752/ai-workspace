@@ -13,6 +13,8 @@ from langchain.agents import create_agent as create_react_agent
 # LangGraph 流式会吐多种消息块，只想要“模型正文”那种，靠这个类做类型判断过滤
 from langchain_core.messages import AIMessageChunk
 import hashlib  # 计算文件内容的 MD5 指纹（用于内容查重和文件命名）
+import asyncio  # C2：后台暖机 MCP 工具用 create_task，不阻塞启动
+from contextlib import asynccontextmanager  # C2：把"启动暖机"包成 FastAPI lifespan 异步上下文
 import json  # 序列化 SSE 推送的数据、解析模型返回的工具参数
 import os  # 路径拼接、判断文件是否存在
 
@@ -21,8 +23,25 @@ from .config import (collection, UPLOAD_DIR, ALLOWED_EXT, MAX_FILE_SIZE, MAX_TEX
 from .rag import extract_text, split_text
 from .auth import verify_password, issue_token, get_identity, require_liang  # 步骤4：验口令+签发票+解析身份+亮哥守卫
 from .graph import agent_graph  # 步骤5：多 Agent 编排图（Supervisor + 3 worker 的 StateGraph），唯一生产路径
+from .agents import get_mcp_tools  # C2：启动暖机调它（依赖方向 main→agents 正确、不成环）
 
-app = FastAPI(title="AI Workspace")  # title 会显示在自动生成的接口文档页（启动后访问 /docs）上
+# ===== C2：启动暖机 MCP 工具 =====
+# 为什么：Supervisor 是同步节点、每请求都调 build_tools_manifest() 读 _mcp_tools_cache；
+# 而 MCP 工具是异步懒加载的，冷启动首请求进来时缓存还是 None → 工具清单只剩技能。
+# 这里用启动钩子【后台】暖机（create_task 不 await）：既不阻塞启动、也不会被 MCP 子进程卡死；
+# 暖好后 build_tools_manifest 的"冷启动不缓存"逻辑会自动重建出完整清单（B 步骤埋的自愈）。
+_mcp_warm_task = None  # 存引用，防止 fire-and-forget 任务被垃圾回收中途掐断
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _mcp_warm_task
+    _mcp_warm_task = asyncio.create_task(get_mcp_tools())  # 不 await：后台跑；失败自动降级为 []（get_mcp_tools 内部已兜）
+    print("[启动] 已后台发起 MCP 工具暖机（不阻塞启动）")
+    yield  # ← 应用在此运行；yield 之后是关闭清理（本项目无需，子进程随主进程退出）
+
+
+app = FastAPI(title="AI Workspace", lifespan=lifespan)  # title 显示在 /docs；lifespan 挂上启动暖机钩子
 
 # 跨域配置：端口不同即跨域，浏览器会拦截前端(3000)请求后端(8000)，后端须显式声明允许的来源。
 # 白名单从环境变量 CORS_ORIGINS 读（逗号分隔），本地默认放行 localhost:3000。

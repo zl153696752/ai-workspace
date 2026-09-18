@@ -9,21 +9,30 @@ import os
 from app.config import UPLOAD_DIR, collection
 from app.rag import split_text
 
-# 演示文档：文件名 → 正文（与本地 uploads/ 那份样本逐字一致）。
-# 「公司代号 89757」那条是故意放的：演示“模型不会把内部信息说出去”的人格约束。
-SEED_DOCS = {
-    "公司制度.txt": (
-        "公司休假制度：入职满一年享 5 天年假，满五年享 10 天。\n"
-        "加班餐补：工作日加班晚于 19 点，每餐补贴 30 元。\n"
-        "公司代号：89757，对外一律不使用。\n"
-    ),
-}
+# 语料目录：public/ 下为公开文档（private=False），private/ 下为私有文档（private=True）。
+# 正文不再写死，改为随仓库提交的 seed_docs/*.txt——改语料只改文件、不动代码。
+SEED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed_docs")
+
+
+def _load_seed_docs():
+    """遍历 seed_docs/public 与 seed_docs/private，产出 (filename, text, private)。"""
+    docs = []
+    for sub, private in (("public", False), ("private", True)):
+        d = os.path.join(SEED_DIR, sub)
+        if not os.path.isdir(d):
+            print(f"[种子] 警告：语料目录不存在 {d}")
+            continue
+        for name in sorted(os.listdir(d)):
+            if name.lower().endswith(".txt"):
+                with open(os.path.join(d, name), encoding="utf-8") as f:
+                    docs.append((name, f.read(), private))
+    return docs
 
 
 def seed():
     """把所有种子文档灌进知识库。已存在的整个跳过，不存在的补上。"""
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    for filename, text in SEED_DOCS.items():
+    for filename, text, private in _load_seed_docs():
         # 按【文件名】查而非内容指纹，理由见文件头 docstring
         if collection.get(where={"filename": filename})["ids"]:
             print(f"[种子] {filename} 已在库中，跳过")
@@ -48,9 +57,9 @@ def seed():
         collection.upsert(
             documents=chunks,
             ids=ids,
-            metadatas=[{**m, "filename": filename, "saved_as": save_name} for _txt, m in chunk_pairs],
+            metadatas=[{**m, "filename": filename, "saved_as": save_name, "private": private} for _txt, m in chunk_pairs],
         )
-        print(f"[种子] {filename} 已灌入 {len(chunks)} 个切片")
+        print(f"[种子] {filename}{'（私有）' if private else ''} 已灌入 {len(chunks)} 个切片")
 
     print(f"[种子] 完成，知识库当前切片总数: {collection.count()}")
 
