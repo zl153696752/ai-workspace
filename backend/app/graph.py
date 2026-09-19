@@ -21,6 +21,8 @@ from langchain.agents import create_agent as create_react_agent  # 5e：工具 w
 from .config import client
 from .rag import _retrieve_once, _grade_and_filter, build_kb_manifest  # 5c：用更细的原子操作，自己做质检 + 有界重查（search_knowledge_base 是"查一次即用"的封装，这里不用它）
 from .agents import build_synth_system, lc_llm, get_mcp_tools, load_skill, build_tools_manifest
+from langchain_core.runnables.config import merge_configs   # 合并 config：保住父图的流式回调，再追加我们的计量器
+from .llm_gateway import chat, TokenMeter             # chat 是 A-1 加的，这里补 TokenMeter
 
 
 # ===== State（黑板）：贯穿所有节点的共享状态 =====
@@ -89,11 +91,11 @@ def supervisor_node(state: AgentState) -> dict:
     query = state["query"]
     is_liang = state.get("is_liang", False)
     try:
-        resp = client.chat.completions.create(
-            model="deepseek-v4-flash",
-            messages=[{"role": "system", "content": build_intent_system(is_liang)},   # 动态提示词
+        resp = chat(
+            messages=[{"role": "system", "content": build_intent_system(is_liang)},
                       {"role": "user", "content": query}],
-            temperature=0,  # 分类要稳定可复现，温度归零
+            purpose="supervisor",
+            temperature=0,
         )
         raw = (resp.choices[0].message.content or "").strip().lower()
     except Exception as e:
@@ -150,11 +152,9 @@ def _rewrite_for_retrieval(messages: list, original_query: str, scope: str = "co
     用裸 client（非流式、不进 messages 流，改写句不该漏给用户）；失败退回原话，绝不做单点故障。"""
     guard = _scope_rewrite_guard(scope, kb_manifest)   # general 时为空串，不干预
     try:
-        rewrite = client.chat.completions.create(
-            model="deepseek-v4-flash",
-            messages=[{"role": "system",
-                       "content": "结合对话历史，把用户最新问题改写成一句独立完整的检索语句（贴近知识库文档措辞）。只输出检索语句本身，不要解释。若最新问题不是知识库查询类问题（闲聊、创作、讲故事等），原样输出该问题，不要改写、不要回答它。" + guard}] + messages[
-                         -4:],
+        rewrite = chat(
+            messages=[{"role": "system", "content": "结合对话历史，把用户最新问题改写成一句独立完整的检索语句（贴近知识库文档措辞）。只输出检索语句本身，不要解释。若最新问题不是知识库查询类问题（闲聊、创作、讲故事等），原样输出该问题，不要改写、不要回答它。" + guard}] + messages[-4:],
+            purpose="rewrite",
         )
         return (rewrite.choices[0].message.content or "").strip() or original_query
     except Exception:
@@ -175,11 +175,10 @@ def _rewrite_corrective(prev_query: str, scope: str = "company", kb_manifest: st
         strategy = ("上一次用某个检索式在企业知识库里没找到相关内容。请把用户的问题换一个检索角度重新表述，只输出新的检索语句、不要解释。"
                     "可尝试：① 更宽泛的上位概念；② 同义/近义术语；③ 只保留最核心的实体名词。")
     try:
-        rewrite = client.chat.completions.create(
-            model="deepseek-v4-flash",
-            messages=[{"role": "system",
-                       "content": strategy + "如果你判断这个问题根本不需要查知识库（如闲聊、创作、讲故事、常识问答），只输出：SKIP"},
+        rewrite = chat(
+            messages=[{"role": "system", "content": strategy + "如果你判断这个问题根本不需要查知识库（如闲聊、创作、讲故事、常识问答），只输出：SKIP"},
                       {"role": "user", "content": prev_query}],
+            purpose="rewrite_corrective",
         )
         out = (rewrite.choices[0].message.content or "").strip()
         return "" if out.upper().startswith("SKIP") else out
@@ -270,7 +269,7 @@ async def tool_node(state: AgentState) -> dict:
         tools = mcp_tools + [load_skill]
         react = create_react_agent(lc_llm, tools, system_prompt=_TOOL_SYSTEM)
         # 独立 config：不继承父图流式回调（子 agent 中间 token 不窜进正文）；recursion_limit 给子循环也上防死循环护栏
-        result = await react.ainvoke({"messages": state["messages"]}, config={"recursion_limit": 8})
+        result = await react.ainvoke({"messages": state["messages"]}, config={"recursion_limit": 8, "callbacks": [TokenMeter("tool")]})
         msgs = result.get("messages") or []
         tool_result = msgs[-1].content if msgs else ""  # 子 agent 跑完，最后一条就是它基于工具结果的报告
         print(f"[工具worker] 工具={[t.name for t in tools]} → tool_result {len(str(tool_result))} 字")
@@ -284,7 +283,7 @@ async def tool_node(state: AgentState) -> dict:
 
 
 # ===== 节点 4：合成 worker =====
-def synthesize_node(state: AgentState) -> dict:
+def synthesize_node(state: AgentState, config) -> dict:
     """合成 worker：身份人格 + 质检过的资料（+工具结果）→ 生成回答 + 准确溯源。
     token 由图的 stream_mode="messages" 捕获后转发前端（打字机）。
     5f：系统提示词换成 build_synth_system（合成专属：只用给定资料/工具结果作答 + prompt 注入护栏）。
@@ -301,7 +300,7 @@ def synthesize_node(state: AgentState) -> dict:
     if tool_result:
         user_content = f"【工具结果】\n{tool_result}\n\n" + user_content
     lg_messages = [{"role": "system", "content": system}] + messages[:-1] + [{"role": "user", "content": user_content}]
-    response = lc_llm.invoke(lg_messages)  # 5b 验证点：messages 模式应能捕获到 token 流；若不打字机就改成流式消费
+    response = lc_llm.invoke(lg_messages, config=merge_configs(config, {"callbacks": [TokenMeter("synthesize")]}))  # 5b 验证点：messages 模式应能捕获到 token 流；若不打字机就改成流式消费
     answer = response.content or ""
 
     # ===== 准确溯源：从答案正文抽出真正引用的编号，只发这些片段当卡片 =====

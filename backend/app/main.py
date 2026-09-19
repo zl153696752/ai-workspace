@@ -24,6 +24,8 @@ from .rag import extract_text, split_text
 from .auth import verify_password, issue_token, get_identity, require_liang  # 步骤4：验口令+签发票+解析身份+亮哥守卫
 from .graph import agent_graph  # 步骤5：多 Agent 编排图（Supervisor + 3 worker 的 StateGraph），唯一生产路径
 from .agents import get_mcp_tools  # C2：启动暖机调它（依赖方向 main→agents 正确、不成环）
+from .llm_gateway import start_trace, get_trace_spans
+from .db import init_db, save_trace
 
 # ===== C2：启动暖机 MCP 工具 =====
 # 为什么：Supervisor 是同步节点、每请求都调 build_tools_manifest() 读 _mcp_tools_cache；
@@ -36,6 +38,7 @@ _mcp_warm_task = None  # 存引用，防止 fire-and-forget 任务被垃圾回�
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _mcp_warm_task
+    init_db()   # ← 新增：启动即建表（幂等，第二次启动不会清数据）
     _mcp_warm_task = asyncio.create_task(get_mcp_tools())  # 不 await：后台跑；失败自动降级为 []（get_mcp_tools 内部已兜）
     print("[启动] 已后台发起 MCP 工具暖机（不阻塞启动）")
     yield  # ← 应用在此运行；yield 之后是关闭清理（本项目无需，子进程随主进程退出）
@@ -105,9 +108,11 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
     每条事件的文本格式固定为两行 + 一个空行：
         event: 事件名
         data: JSON 字符串
-    本项目共 5 种事件：
+    本项目共 6 种事件：
         sources —— 引用卡片数据（文件名 + 原文片段），前端渲染成可展开的来源卡片
         token   —— 模型正文的一小段文字，前端把它们拼接起来显示
+        meta    —— 本次问答的轻量指标（延迟/token/成本/调用次数），全员可见，渲染在回答角落
+        trace   —— 完整全链路 trace（各步 span 明细），【仅亮哥】可见，渲染"🔍 推理链路"抽屉
         error   —— 出错了，前端弹出提示文案
         done    —— 本次回答结束，前端收尾（停止 loading 动画）
     """
@@ -130,6 +135,8 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
         #   updates  ：每个节点跑完吐一次它的 State 更新；用来【在 synthesize 出完答案后发准确溯源卡片】。
         #   messages ：模型每吐一个 token 一条；用来发正文（打字机），但要【按节点名过滤】只放行 synthesize 的。
         # 多模式下 astream 每次产出 (mode, chunk) 二元组：mode 是 "updates"/"messages"，chunk 随 mode 不同。
+        start_trace()
+        node_spans = []  # ← 新增：累积节点级 span（State.trace 的增量）
         try:
             async for mode, chunk in agent_graph.astream(
                     init_state, config={"recursion_limit": 10}, stream_mode=["messages", "updates"]):
@@ -137,6 +144,10 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
                     # 🔴 卡片准确化：不再 eager 发 retrieve 的全部 top-3，改成【等 synthesize 出完答案】发它过滤后的
                     #    cited_sources（只含答案真正引用到的片段）。所以卡片在正文之后到达（②甲）——准确溯源优先于秒出。
                     # synthesize 的 updates 在它那批 token 全流完之后才到，天然满足"答案后发卡"。
+                    # ← 新增：每个节点跑完吐一次更新，把它返回的 trace 增量收进来
+                    for node_out in chunk.values():
+                        if isinstance(node_out, dict):
+                            node_spans.extend(node_out.get("trace") or [])
                     upd = chunk.get("synthesize")
                     if upd is not None:
                         cited = upd.get("cited_sources") or []
@@ -146,13 +157,52 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
                     # chunk 是 (消息块, 元数据)；三重过滤：synthesize 节点 + AIMessageChunk + content 非空。
                     # 🔴 按 langgraph_node 过滤是关键：不然 retrieve 里的改写、tool 里的中间消息会漏进正文显示给用户。
                     msg, meta = chunk
-                    if meta.get("langgraph_node") == "synthesize" and isinstance(msg,
-                                                                                 AIMessageChunk) and msg.content:
+                    if meta.get("langgraph_node") == "synthesize" and isinstance(msg, AIMessageChunk) and msg.content:
                         yield f"event: token\ndata: {json.dumps({'content': msg.content}, ensure_ascii=False)}\n\n"
         except Exception:
             # 生成中出错（超时/限流/图异常/超 recursion_limit）：HTTP 头已发出改不了状态码，只能用 SSE 事件告诉前端
             yield f"event: error\ndata: {json.dumps({'message': '模型服务暂时不可用，请稍后再试'}, ensure_ascii=False)}\n\n"
-        # 无论成败都发 done：前端靠它结束 loading，漏发会一直转圈
+        # ← 新增：收尾汇总本次问答的所有模型调用 span（放 done 之前，成败都汇总）
+        spans = get_trace_spans()
+        summary = {
+            "calls": len(spans),
+            "total_latency": round(sum(s.get("latency") or 0 for s in spans), 3),
+            "prompt_tokens": sum(s.get("prompt_tokens") or 0 for s in spans),
+            "completion_tokens": sum(s.get("completion_tokens") or 0 for s in spans),
+            "total_cost": round(sum(s.get("cost") or 0 for s in spans), 6),
+            "degraded": any(s.get("degraded") for s in spans),
+        }
+        print(f"[本次问答汇总] {summary}")  # B-1 先 print 验证归集对不对；B-2 再落 SQLite
+        # ← 新增：从节点 span 拎出意图/作用域，合并两类降级，落一条全链路 trace
+        sup = next((s for s in node_spans if s.get("node") == "supervisor" and not s.get("degraded")), {})
+        try:
+            save_trace(
+                query=messages[-1]["content"],
+                identity="liang" if identity["is_liang"] else "guest",
+                intents=",".join(sup.get("intents") or []),
+                scope=sup.get("scope") or "",
+                degraded=summary["degraded"] or any(s.get("degraded") for s in node_spans),
+                summary=summary, llm_spans=spans, node_spans=node_spans,
+            )
+        except Exception as e:
+            print(f"[trace落库] 失败（不阻断问答）：{e}")  # 降级留痕：落库炸了也绝不能拖垮用户这次问答
+
+        # ===== 阶段C：可观测性数据分层透出前端 =====
+        # ① meta —— 轻量指标，【全员】可见（阶段D 渲染在回答角落："本次 3.7s · 4250 tokens · ¥0.011"）
+        meta = {
+            "latency": summary["total_latency"],
+            "tokens": summary["prompt_tokens"] + summary["completion_tokens"],
+            "cost": summary["total_cost"],
+            "calls": summary["calls"],
+        }
+        yield f"event: meta\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
+
+        # ② trace —— 完整全链路明细，【仅亮哥】可见（阶段D 渲染"🔍 推理链路"抽屉）
+        #    游客收不到这条事件（后端不发，非前端隐藏）→ 真·身份隔离
+        if identity["is_liang"]:
+            trace_payload = {"summary": summary, "llm_spans": spans, "node_spans": node_spans}
+            yield f"event: trace\ndata: {json.dumps(trace_payload, ensure_ascii=False)}\n\n"
+
         yield "event: done\ndata: {}\n\n"
 
     # media_type="text/event-stream" 是 SSE 的标准 MIME 类型，前端靠它识别流式响应

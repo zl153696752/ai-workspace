@@ -41,10 +41,11 @@ const mdComponents: Components = {
 type MessageListProps = {
   messages: Msg[];
   loading: boolean;
-  activeId: string | null; // 复制反馈的 key 前缀（切会话后旧反馈自动失效）
+  activeId: string | null;
+  isLiang: boolean;   // 步骤9：决定是否渲染"推理链路"抽屉（仅亮哥）
 };
 
-export default function MessageList({ messages, loading, activeId }: MessageListProps) {
+export default function MessageList({ messages, loading, activeId, isLiang }: MessageListProps) {
   const [copiedKey, setCopiedKey] = useState<string | null>(null); // 刚复制成功的 AI 消息（显示“已复制”反馈用）
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -134,6 +135,55 @@ export default function MessageList({ messages, loading, activeId }: MessageList
                       </details>
                     ))}
                   </div>
+                )}
+
+                {/* 步骤9：回答角落的轻量指标（全员可见，常显淡灰字）*/}
+                {msg.meta && (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2 text-[11px] text-gray-300">
+                    <span>⏱ {msg.meta.latency}s</span><span>·</span>
+                    <span>{msg.meta.tokens} tokens</span><span>·</span>
+                    <span>¥{msg.meta.cost}</span><span>·</span>
+                    <span>{msg.meta.calls} 次调用</span>
+                  </div>
+                )}
+
+                {/* 步骤9：推理链路抽屉（仅亮哥）。双保险：后端只给亮哥发 trace，前端再判 isLiang，游客两头都拿不到 */}
+                {isLiang && msg.trace && (
+                  <details className="mt-2 rounded-lg border border-gray-100 bg-gray-50/70 px-3 py-2 text-xs max-w-xl">
+                    <summary className="cursor-pointer select-none text-gray-500 hover:text-[#4d6bfe] transition-colors">
+                      🔍 推理链路
+                    </summary>
+                    <div className="mt-2 space-y-2.5">
+                      <div className="text-gray-600">
+                        共 {msg.trace.summary.calls} 次模型调用 · 总耗时 {msg.trace.summary.total_latency}s ·
+                        tokens {msg.trace.summary.prompt_tokens}+{msg.trace.summary.completion_tokens} ·
+                        成本 ¥{msg.trace.summary.total_cost}
+                        {msg.trace.summary.degraded && <span className="text-amber-500"> · ⚠️ 触发降级</span>}
+                      </div>
+                      <div>
+                        <div className="font-medium text-gray-400 mb-1">模型调用</div>
+                        <div className="space-y-0.5">
+                          {msg.trace.llm_spans.map((s, idx) => (
+                            <div key={idx} className="flex flex-wrap gap-x-3 font-mono text-gray-500">
+                              <span className="text-[#4d6bfe] w-28">{s.purpose ?? "?"}</span>
+                              <span className="w-16">{s.latency ?? 0}s</span>
+                              <span className="w-24">{(s.prompt_tokens ?? 0) + (s.completion_tokens ?? 0)} tok</span>
+                              <span>¥{s.cost ?? 0}</span>
+                              {s.degraded && <span className="text-amber-500">降级</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="font-medium text-gray-400 mb-1">节点链路</div>
+                        <div className="space-y-0.5">
+                          {msg.trace.node_spans.map((s, idx) => (
+                            <div key={idx} className="font-mono text-gray-500 break-all">{JSON.stringify(s)}</div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </details>
                 )}
 
                 {/* 复制按钮（悬停浮现；正在流式输出的那条不显示）*/}

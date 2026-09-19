@@ -7,6 +7,7 @@ __pycache__/
 .vscode/
 uploads/
 chroma_db/
+*.db
 frontend_out/
 _probe_modelscope/
 _deploy/

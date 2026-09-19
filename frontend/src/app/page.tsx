@@ -117,6 +117,12 @@ export default function Home() {
           } else if (name === "sources") {
             // 来源事件：写进当前 AI 消息的 sources 字段（卡片先于回答渲染出来）
             patchLastMsg(convId, m => ({ ...m, sources: payload }));
+          } else if (name === "meta") {
+            // 步骤9：轻量指标挂到当前 AI 消息（回答角落常显）
+            patchLastMsg(convId, m => ({ ...m, meta: payload }));
+          } else if (name === "trace") {
+            // 步骤9：完整链路挂到当前 AI 消息（仅亮哥会收到这条事件）
+            patchLastMsg(convId, m => ({ ...m, trace: payload }));
           } else if (name === "token") {
             aiContent += payload.content;
             patchLastMsg(convId, m => ({ ...m, content: aiContent }));
@@ -217,7 +223,7 @@ export default function Home() {
           <Welcome onSend={sendMessage} />
         ) : (
           /* --- 对话流（气泡 / Markdown / 引用卡片 / 复制 / 贴底滚动都在组件内） --- */
-          <MessageList messages={messages} loading={loading} activeId={activeId} />
+          <MessageList messages={messages} loading={loading} activeId={activeId} isLiang={isLiang} />
         )}
 
         {/* --- 底部输入框 --- */}
