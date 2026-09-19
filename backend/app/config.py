@@ -52,6 +52,6 @@ import secrets as _secrets   # 标准库：生成密码学安全的随机串（�
 
 JWT_SECRET = os.getenv("JWT_SECRET") or _secrets.token_urlsafe(32)
 if not os.getenv("JWT_SECRET"):
-    print("[鉴权] ⚠️ 未设置 JWT_SECRET，已临时生成随机密钥：重启后所有已签发 token 会失效，仅供本地开发。线上务必在环境变量固定它。")
+    print("[鉴权][警告] 未设置 JWT_SECRET，已临时生成随机密钥：重启后所有已签发 token 会失效，仅供本地开发。线上务必在环境变量固定它。")
 ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")   # 空 = 未配置：登录接口会明确拒绝，绝不"空口令放行"
 TOKEN_EXPIRE_DAYS = int(os.getenv("TOKEN_EXPIRE_DAYS", "30"))

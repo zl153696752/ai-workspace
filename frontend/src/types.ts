@@ -24,3 +24,14 @@ export type Msg = { role: string; content: string; sources?: Source[]; meta?: Me
 export type KbFile = { filename: string; chunks: number; private: boolean };
 // 一次会话：id 唯一标识，title 用首条提问生成，消息和创建时间一起存
 export type Conversation = { id: string; title: string; messages: Msg[]; createdAt: number };
+
+// 步骤11：一条长期记忆（后端 /api/memories 返回的形状，仅亮哥有）
+export type Memory = {
+  id: number;
+  type: string;        // 'preference'(偏好) | 'fact'(稳定事实)
+  content: string;     // 记忆正文（描述性措辞）
+  confidence: number;  // 置信度 0~1；<0.6 不注入回答
+  source: string;      // 从哪句原话抽的（可回溯核查）
+  topic: string;       // 主题键（同 user+topic 只留最新一条）
+  updated_at: string;
+};

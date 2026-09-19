@@ -27,6 +27,7 @@ from .agents import build_synth_system, lc_llm, get_mcp_tools, load_skill, build
 from langchain_core.runnables.config import merge_configs   # 合并 config：保住父图的流式回调，再追加我们的计量器
 from langchain_core.messages import ToolMessage   # 方案A：从 ReAct 消息流里认出"实际执行的工具调用"（每条 ToolMessage = 一次真实工具调用）
 from .llm_gateway import chat, TokenMeter             # chat 是 A-1 加的，这里补 TokenMeter
+from .db import get_memories  # 步骤11：合成前检索亮哥的长期记忆，注入 system prompt
 
 
 # ===== State（黑板）：贯穿所有节点的共享状态 =====
@@ -380,7 +381,13 @@ def synthesize_node(state: AgentState, config) -> dict:
     tool_result = "\n\n".join(f"（关于「{t.get('sub_query', '')}」）\n{t.get('result', '')}"
                               for t in tool_results if t.get("result"))
 
-    system = build_synth_system(state.get("is_liang", False), scope, has_kb)  # 按身份 + 作用域 + 是否有KB 动态生成
+    # ===== 步骤11：注入读取——只对亮哥检索长期记忆，拼成多行"- xxx"文本（游客 memory_text 为空，不注入）=====
+    memory_text = ""
+    if state.get("is_liang", False):
+        mems = get_memories("liang")  # s1 的读取：已按 confidence>=0.6 过滤 + 限量 + 倒序
+        if mems:
+            memory_text = "\n".join(f"- {m['content']}" for m in mems)
+    system = build_synth_system(state.get("is_liang", False), scope, has_kb, memory_text)  # 身份 + 作用域 + 是否有KB + 记忆 动态生成
     # 🔴【用户问题】用原话 state["query"]，不能用改写句（改写句贴近文档措辞，回灌会丢语气/改原意）
     user_content = f"【编号资料】\n{material}\n\n【用户问题】\n{state['query']}"
     if tool_result:
@@ -404,7 +411,7 @@ def synthesize_node(state: AgentState, config) -> dict:
         trace.append({"node": "synthesize", "event": "citation_check",
                       "n_sources": len(all_sources), "used_ids": used_ids, "cited": cited})
         if not cited:
-            print(f"[合成] ⚠️ citation_miss：检索到 {len(all_sources)} 条资料却未标任何 [n]（C2 漏标候选，计入分子）")
+            print(f"[合成][警告] citation_miss：检索到 {len(all_sources)} 条资料却未标任何 [n]（C2 漏标候选，计入分子）")
     print(f"[合成] 归并 {len(kb_chunks)}切片→{len(all_sources)}张(去重后) + {len(tool_results)}份工具结果 | scope={scope} used_ids={used_ids} → 发 {len(cited_sources)}/{len(all_sources)} 张卡片")
 
     return {"used_ids": used_ids, "cited_sources": cited_sources, "trace": trace}

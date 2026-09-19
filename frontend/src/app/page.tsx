@@ -8,6 +8,7 @@ import ChatInput from "@/components/ChatInput";
 import MessageList from "@/components/MessageList";
 import Sidebar from "@/components/Sidebar";
 import Welcome from "@/components/Welcome";
+import MemoryPanel from "@/components/MemoryPanel";
 import { useConversations } from "@/hooks/useConversations";
 import { useKnowledgeFiles } from "@/hooks/useKnowledgeFiles";
 import type { Conversation, Msg } from "@/types";
@@ -18,6 +19,7 @@ import { useAuth } from "@/hooks/useAuth";  // 步骤4c：登录状态（isLiang
 export default function Home() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showMemories, setShowMemories] = useState(false);
   const abortRef = useRef<AbortController | null>(null); // 停止生成用：中断 fetch 流
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -215,6 +217,7 @@ export default function Home() {
         onDeleteFile={deleteFile}
         onLogin={handleLogin}
         onLogout={handleLogout}
+        onOpenMemories={() => setShowMemories(true)}
       />
 
       <main className="flex-1 flex flex-col min-w-0">
@@ -236,6 +239,9 @@ export default function Home() {
           textareaRef={textareaRef}
         />
       </main>
+
+      {/* 步骤11：记忆治理模态（仅亮哥能打开；条件渲染，关掉即卸载） */}
+      {showMemories && <MemoryPanel onClose={() => setShowMemories(false)} />}
     </div>
   );
 }

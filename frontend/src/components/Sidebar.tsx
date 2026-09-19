@@ -3,6 +3,7 @@
 // 展示 + 回调上抛为主；仅"登录口令输入""私人上传勾选"两处是本地 UI 状态（步骤4c），不必上抛给页面。
 import { useState } from "react";   // 步骤4c：登录口令、私人勾选两处本地状态
 import {
+  Brain,
   Download,
   FileText,
   Lock,
@@ -29,6 +30,7 @@ type SidebarProps = {
   onDeleteFile: (filename: string) => void;
   onLogin: (password: string) => void;   // 步骤4c：登录（口令上抛给 page.tsx 换票）
   onLogout: () => void;                  // 步骤4c：退出（前端删票）
+  onOpenMemories: () => void;
 };
 
 export default function Sidebar({
@@ -46,6 +48,7 @@ export default function Sidebar({
   onDeleteFile,
   onLogin,
   onLogout,
+  onOpenMemories,
 }: SidebarProps) {
   // 步骤4c：两处纯本地 UI 状态——登录口令输入、上传时的"私人"勾选（都不用上抛给页面）
   const [pw, setPw] = useState("");
@@ -193,18 +196,27 @@ export default function Sidebar({
       {/* ===== 底部：身份区（游客显示登录框，亮哥显示"已登录 + 退出"）===== */}
       <div className="p-3 border-t border-gray-200/70 space-y-2">
         {isLiang ? (
-          <div className="flex items-center justify-between px-1">
-            <span className="flex items-center gap-1 text-xs text-gray-500">
-              <Lock className="w-3 h-3 text-[#4d6bfe]" /> 已登录 · 亮哥
-            </span>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between px-1">
+              <span className="flex items-center gap-1 text-xs text-gray-500">
+                <Lock className="w-3 h-3 text-[#4d6bfe]" /> 已登录 · 亮哥
+              </span>
+              <button
+                onClick={() => {
+                  onLogout();
+                  setPw("");
+                }}
+                className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+              >
+                退出
+              </button>
+            </div>
+            {/* 步骤11：记忆治理入口（仅亮哥）——点开看清系统记了啥、一键删错记 */}
             <button
-              onClick={() => {
-                onLogout();
-                setPw("");
-              }}
-              className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+              onClick={onOpenMemories}
+              className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs text-gray-500 border border-transparent hover:bg-white hover:text-[#4d6bfe] hover:border-gray-200/70 transition-colors"
             >
-              退出
+              <Brain className="w-3.5 h-3.5" /> 我的长期记忆
             </button>
           </div>
         ) : (

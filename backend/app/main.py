@@ -25,7 +25,8 @@ from .auth import verify_password, issue_token, get_identity, require_liang  # �
 from .graph import agent_graph  # 步骤5：多 Agent 编排图（Supervisor + 3 worker 的 StateGraph），唯一生产路径
 from .agents import get_mcp_tools  # C2：启动暖机调它（依赖方向 main→agents 正确、不成环）
 from .llm_gateway import start_trace, get_trace_spans
-from .db import init_db, save_trace
+from .db import init_db, save_trace, get_memories, delete_memory  # 步骤11：记忆治理要读(get)/删(delete)
+from .memory import extract_and_store  # 步骤11：记忆官，回答后异步抽取亮哥的偏好/事实
 
 # ===== C2：启动暖机 MCP 工具 =====
 # 为什么：Supervisor 是同步节点、每请求都调 build_tools_manifest() 读 _mcp_tools_cache；
@@ -96,6 +97,20 @@ class ChatRequest(BaseModel):
     messages 是 OpenAI 约定的消息数组：[{"role": "user"/"assistant", "content": "..."}, ...]
     """
     messages: list  # 完整对话历史，最后一条就是用户刚发的这句话
+
+
+# ===== 步骤11：记忆抽取的后台任务管理 =====
+# 🔴 fire-and-forget 陷阱：asyncio.create_task 的返回值若不被任何变量引用，任务可能在跑完前就被垃圾回收掐断。
+#    用一个模块级 set 持有活跃任务的引用、跑完自动 discard——这是 asyncio 后台任务的标准防丢写法（和上面 _mcp_warm_task 存引用同理）。
+_memory_tasks = set()
+
+
+def _spawn_memory_extract(query: str):
+    """把【同步阻塞】的记忆抽取丢进线程池后台跑（asyncio.to_thread），既不阻塞事件循环、也不拖累 SSE 收尾。
+    extract_and_store 内部已全程 try/except，这里只负责发起、不 await 结果：抽取失败无非这轮不记，绝不影响已经推完的回答。"""
+    task = asyncio.create_task(asyncio.to_thread(extract_and_store, query))
+    _memory_tasks.add(task)
+    task.add_done_callback(_memory_tasks.discard)
 
 
 @app.post("/api/chat")
@@ -205,8 +220,31 @@ async def chat(req: ChatRequest, identity: dict = Depends(get_identity)):
 
         yield "event: done\ndata: {}\n\n"
 
+        # ===== 步骤11：回答已完整推给用户，此刻才后台异步抽记忆（只对亮哥，游客不记）=====
+        # 🔴 为什么放在 done 之后：打字机正文、来源卡片、meta、trace 全都发完了才抽，记忆官再慢也影响不到这次体验。
+        if identity["is_liang"]:
+            _spawn_memory_extract(messages[-1]["content"])
+
     # media_type="text/event-stream" 是 SSE 的标准 MIME 类型，前端靠它识别流式响应
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ===== 步骤11：长期记忆治理端点（亮哥专属：看系统记了啥 + 一键删错记）=====
+@app.get("/api/memories")
+async def list_memories(identity: dict = Depends(require_liang)):
+    """查亮哥的全部长期记忆（治理入口）。
+    🔴 和注入(s4)不同：治理要能看【全部】（含低置信的），故 min_confidence=0、limit 放大——
+       注入只喂 confidence>=0.6 的以防污染；治理要让亮哥看到“系统到底记了我啥”，一条都不能藏。"""
+    return {"memories": get_memories("liang", min_confidence=0.0, limit=200)}
+
+
+@app.delete("/api/memories/{memory_id}")
+async def delete_one_memory(memory_id: int, identity: dict = Depends(require_liang)):
+    """删一条记忆（亮哥发现错记/过时，一键删）。memory_id 走路径参数。
+    delete_memory 内部带 user 校验：只能删自己的；删不到(不存在/非本人)→ 404。"""
+    if not delete_memory(memory_id, "liang"):
+        raise HTTPException(status_code=404, detail="记忆不存在或无权删除")
+    return {"deleted": memory_id}
 
 
 @app.post("/api/upload")
