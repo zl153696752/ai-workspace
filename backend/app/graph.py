@@ -22,6 +22,7 @@ from .config import client
 from .rag import _retrieve_once, _grade_and_filter, build_kb_manifest  # 5c：用更细的原子操作，自己做质检 + 有界重查（search_knowledge_base 是"查一次即用"的封装，这里不用它）
 from .agents import build_synth_system, lc_llm, get_mcp_tools, load_skill, build_tools_manifest
 from langchain_core.runnables.config import merge_configs   # 合并 config：保住父图的流式回调，再追加我们的计量器
+from langchain_core.messages import ToolMessage   # 方案A：从 ReAct 消息流里认出"实际执行的工具调用"（每条 ToolMessage = 一次真实工具调用）
 from .llm_gateway import chat, TokenMeter             # chat 是 A-1 加的，这里补 TokenMeter
 
 
@@ -236,6 +237,10 @@ def retrieve_node(state: AgentState) -> dict:
 
         # 观察点：后端终端看到最终检索句、质检级别、保留片数——排查检索问题先看这里
         print(f"[检索质检] query={query!r} grade={grade} kept={len(kept)}")
+        # 方案D：retrieve 走了就无条件记一条基础 span（补全链路，和 synthesize 一致）。
+        #   grade=最终质检级别（首查就中则 correct），n_kept=质检后保留片数；
+        #   若上面触发过重查，这条是"重查后的最终态"，与 crag_retry（记重查过程）互补、不冗余。
+        trace.append({"node": "retrieve", "grade": grade, "n_kept": len(kept)})
         return {"rewritten": query, "hits": kept, "material": material, "sources": sources, "trace": trace}
     except Exception as e:
         # 降级留痕：检索层异常绝不抛给用户；写 degraded + trace，material 兜底"（无）"，合成据此如实告知
@@ -272,9 +277,12 @@ async def tool_node(state: AgentState) -> dict:
         result = await react.ainvoke({"messages": state["messages"]}, config={"recursion_limit": 8, "callbacks": [TokenMeter("tool")]})
         msgs = result.get("messages") or []
         tool_result = msgs[-1].content if msgs else ""  # 子 agent 跑完，最后一条就是它基于工具结果的报告
-        print(f"[工具worker] 工具={[t.name for t in tools]} → tool_result {len(str(tool_result))} 字")
-        return {"tool_result": tool_result,
-                "trace": trace + [{"node": "tool", "tools": [t.name for t in tools]}]}
+        # 方案A：从消息流里提取【实际调用】的工具（每条 ToolMessage = 一次真实工具执行），
+        #   记工具名 + 该次返回的 UTF-8 字节数 —— 精确定位"哪个工具返回巨大、撑爆了后续轮次的 token"。
+        #   （原来的 [t.name for t in tools] 是"全部可用工具"，用没用都列、信息量低，已按你的决定去掉。）
+        tools_called = [{"name": m.name, "result_bytes": len(str(m.content).encode("utf-8"))} for m in msgs if isinstance(m, ToolMessage)]
+        print(f"[工具worker] 实际调用={[c['name'] for c in tools_called]} → tool_result {len(str(tool_result))} 字")
+        return {"tool_result": tool_result, "trace": trace + [{"node": "tool", "tools_called": tools_called}]}
     except Exception as e:
         # 降级留痕：工具环节炸了不阻断主流程，tool_result 兜底空，合成会如实告知拿不到
         print(f"[工具worker] 异常降级：{e}")
@@ -314,7 +322,9 @@ def synthesize_node(state: AgentState, config) -> dict:
     #    A 桶(天气/闲聊没跑 retrieve)、B 桶(跑了但没检索到资料)都不记，不给分母灌水。
     #    cited=False（有料却一个 [n] 都没标）= C2 = 分子：漏标失误【候选】。
     #    → 漏标率 = count(cited=False) / count(citation_check)，由后面的质量检测层从 trace 聚合算出（现在只埋不聚合）。
-    trace = []
+    # 方案B：synthesize 是【必然执行】的链路终点，无条件记一条基础 span（补全链路，不再"查了库才露脸"）。
+    #   scope/has_kb/used_tool_result 体现"这次合成怎么决策的"（用哪套话术、有没有吃工具结果）。
+    trace = [{"node": "synthesize", "scope": scope, "has_kb": has_kb, "used_tool_result": bool(tool_result)}]
     if all_sources:
         cited = bool(used_ids)
         trace.append({"node": "synthesize", "event": "citation_check",
