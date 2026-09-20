@@ -9,6 +9,7 @@ import MessageList from "@/components/MessageList";
 import Sidebar from "@/components/Sidebar";
 import Welcome from "@/components/Welcome";
 import MemoryPanel from "@/components/MemoryPanel";
+import MetricsPanel from "@/components/MetricsPanel";
 import { useConversations } from "@/hooks/useConversations";
 import { useKnowledgeFiles } from "@/hooks/useKnowledgeFiles";
 import type { Conversation, Msg } from "@/types";
@@ -20,6 +21,7 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [showMemories, setShowMemories] = useState(false);
+  const [showMetrics, setShowMetrics] = useState(false);
   const abortRef = useRef<AbortController | null>(null); // 停止生成用：中断 fetch 流
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -218,6 +220,7 @@ export default function Home() {
         onLogin={handleLogin}
         onLogout={handleLogout}
         onOpenMemories={() => setShowMemories(true)}
+        onOpenMetrics={() => setShowMetrics(true)}
       />
 
       <main className="flex-1 flex flex-col min-w-0">
@@ -242,6 +245,8 @@ export default function Home() {
 
       {/* 步骤11：记忆治理模态（仅亮哥能打开；条件渲染，关掉即卸载） */}
       {showMemories && <MemoryPanel onClose={() => setShowMemories(false)} />}
+      {/* 步骤12·12B：质量看板模态（仅亮哥能打开；关掉即卸载） */}
+      {showMetrics && <MetricsPanel onClose={() => setShowMetrics(false)} />}
     </div>
   );
 }

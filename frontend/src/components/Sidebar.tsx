@@ -3,6 +3,7 @@
 // 展示 + 回调上抛为主；仅"登录口令输入""私人上传勾选"两处是本地 UI 状态（步骤4c），不必上抛给页面。
 import { useState } from "react";   // 步骤4c：登录口令、私人勾选两处本地状态
 import {
+  Activity,
   Brain,
   Download,
   FileText,
@@ -31,6 +32,7 @@ type SidebarProps = {
   onLogin: (password: string) => void;   // 步骤4c：登录（口令上抛给 page.tsx 换票）
   onLogout: () => void;                  // 步骤4c：退出（前端删票）
   onOpenMemories: () => void;
+  onOpenMetrics: () => void;
 };
 
 export default function Sidebar({
@@ -49,6 +51,7 @@ export default function Sidebar({
   onLogin,
   onLogout,
   onOpenMemories,
+  onOpenMetrics
 }: SidebarProps) {
   // 步骤4c：两处纯本地 UI 状态——登录口令输入、上传时的"私人"勾选（都不用上抛给页面）
   const [pw, setPw] = useState("");
@@ -217,6 +220,13 @@ export default function Sidebar({
               className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs text-gray-500 border border-transparent hover:bg-white hover:text-[#4d6bfe] hover:border-gray-200/70 transition-colors"
             >
               <Brain className="w-3.5 h-3.5" /> 我的长期记忆
+            </button>
+            {/* 步骤12·12B：质量看板入口（仅亮哥）——运行时成本/降级/检索命中/漏标一屏看全 */}
+            <button
+              onClick={onOpenMetrics}
+              className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs text-gray-500 border border-transparent hover:bg-white hover:text-[#4d6bfe] hover:border-gray-200/70 transition-colors"
+            >
+              <Activity className="w-3.5 h-3.5" /> 质量看板
             </button>
           </div>
         ) : (

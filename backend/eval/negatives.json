@@ -1,0 +1,86 @@
+[
+  {
+    "id": "neg_001",
+    "question": "牛来 N7 Ultra 的详细参数和官方售价是多少？",
+    "why_absent": "资料中只有 N7 Pro、N7s、N7 标准版三款型号，并不存在 N7 Ultra 这一产品。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_002",
+    "question": "牛来 N7 mini 和牛来 N9 什么时候发布、定价多少？",
+    "why_absent": "知识库的产品目录里没有 N7 mini、N9 这两个型号，属于不存在的产品。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_003",
+    "question": "牛来平板 Pad Pro 的屏幕尺寸和处理器型号是什么？",
+    "why_absent": "牛来数码的产品线只有手机及配件周边，资料中没有任何平板类产品。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_004",
+    "question": "牛来智能手表 W7 支持哪些运动模式和续航多久？",
+    "why_absent": "知识库未收录智能手表类产品，W7 并不存在于产品与配件目录中。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_005",
+    "question": "牛来 N7 Pro 的防水防尘等级是 IP68 还是 IP69K？",
+    "why_absent": "资料只涉及选购、保修与售后，未提及任何防水防尘等级参数。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_006",
+    "question": "牛来 N7s 支持哪些 5G 频段和网络制式？",
+    "why_absent": "知识库中没有网络制式、频段等通信规格相关内容。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_007",
+    "question": "牛来 N7 标准版预装的操作系统是哪个安卓版本？",
+    "why_absent": "资料未提及系统版本、操作系统或软件更新相关信息。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_008",
+    "question": "牛来 N7 Pro 的机身材质是中框铝合金还是钛合金？",
+    "why_absent": "知识库中没有机身材质、工艺用料方面的描述。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_009",
+    "question": "牛来数码的股票代码是多少？是否已经上市？",
+    "why_absent": "公司与渠道资料只讲企业服务、门店与促销，没有任何上市或证券信息。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_010",
+    "question": "牛来数码的创始人兼 CEO 叫什么名字？",
+    "why_absent": "资料中只有公司简介和发展历程，未出现任何高管或创始人姓名。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_011",
+    "question": "牛来数码最近一轮融资的金额和投资方是谁？",
+    "why_absent": "知识库不含融资、股权或投资人相关内容。",
+    "expected": "absent",
+    "gold_sources": []
+  },
+  {
+    "id": "neg_012",
+    "question": "牛来数码去年的年营收和净利润分别是多少？",
+    "why_absent": "公司资料只提到 N5 系列年销量突破 50 万台，未披露营收、净利润等财务数据。",
+    "expected": "absent",
+    "gold_sources": []
+  }
+]

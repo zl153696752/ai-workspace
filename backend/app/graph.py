@@ -42,6 +42,7 @@ class AgentState(TypedDict, total=False):
     kb_chunks: Annotated[list, operator.add]  # 步骤10：各 retrieve 实例返回的【裸切片】(不带全局编号)，fan-in 用 + 合并，synthesize 再统一编号
     used_ids: list  # 答案正文里真正引用的编号集合（synthesize 从 [n] 正则抽出）
     cited_sources: list  # 过滤后的卡片：只含 used_ids 命中的来源（main.py 读它发前端）
+    answer: str  # 步骤12：最终完整答案（synthesize 产出）——供离线评估/监控等非流式消费者直接取，不必解析 token 流
     tool_results: Annotated[list, operator.add]  # 步骤10：各 tool 实例的报告，fan-in 用 + 合并
     degraded: Annotated[bool, operator.or_]  # 并行 fan-in：任一 worker 降级即降级
     trace: Annotated[list, operator.add]  # 并行 fan-in：各 worker 并发追加 span，用 + 合并
@@ -414,7 +415,7 @@ def synthesize_node(state: AgentState, config) -> dict:
             print(f"[合成][警告] citation_miss：检索到 {len(all_sources)} 条资料却未标任何 [n]（C2 漏标候选，计入分子）")
     print(f"[合成] 归并 {len(kb_chunks)}切片→{len(all_sources)}张(去重后) + {len(tool_results)}份工具结果 | scope={scope} used_ids={used_ids} → 发 {len(cited_sources)}/{len(all_sources)} 张卡片")
 
-    return {"used_ids": used_ids, "cited_sources": cited_sources, "trace": trace}
+    return {"answer": answer, "used_ids": used_ids, "cited_sources": cited_sources, "trace": trace}
 
 
 # ===== 组装 + 编译 =====

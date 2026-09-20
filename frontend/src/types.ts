@@ -35,3 +35,26 @@ export type Memory = {
   topic: string;       // 主题键（同 user+topic 只留最新一条）
   updated_at: string;
 };
+
+// ===== 步骤12·12B：在线质量看板数据（对应后端 GET /api/metrics 的返回）=====
+export type Metrics = {
+  range: { days: number | null; total_requests: number };
+  cost: { total: number; avg_per_request: number; total_tokens: number };
+  latency: { avg: number; max: number };
+  degrade_rate: number;
+  avg_calls: number;
+  retrieval: {
+    subqueries: number;
+    hit_rate: number | null;
+    empty_rate: number | null;
+    retry_rate: number | null;
+    grade_dist: { correct: number; incorrect: number; unavailable: number };
+  };
+  citation: { checked: number; miss: number; miss_rate: number | null };
+  distribution: {
+    intents: Record<string, number>;
+    scopes: Record<string, number>;
+    identity: Record<string, number>;
+  };
+  cost_by_purpose: Record<string, { calls: number; cost: number; latency: number }>;
+};

@@ -1,0 +1,856 @@
+[
+  {
+    "id": "eval_001",
+    "question": "牛来N7系列现在在售的手机有几款？",
+    "gold_answer": "三款",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "",
+        "part": 0
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_002",
+    "question": "买牛来N7系列手机时，怎么避免把一款的参数错当成另一款的？",
+    "gold_answer": "认准型号后缀，不要把某一款的参数误当成另一款",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "",
+        "part": 0
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_003",
+    "question": "牛来N7电池多大？充电速度怎么样？",
+    "gold_answer": "4000mAh，支持67W有线快充",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "牛来 N7（标准版）",
+        "part": 1
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_004",
+    "question": "牛来N7卖多少钱？一共有哪几种颜色可以挑？",
+    "gold_answer": "官方售价2999元，提供曜石黑、皓月白、青霜三种配色",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "牛来 N7（标准版）",
+        "part": 1
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_005",
+    "question": "牛来 N7 Pro 卖多少钱，有哪几种颜色可选？",
+    "gold_answer": "官方售价 3999 元，提供曜石黑、皓月白、暮山紫三种配色",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "牛来 N7 Pro",
+        "part": 2
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_006",
+    "question": "N7 Pro 的相机参数怎么样，前后摄像头分别是多少像素？",
+    "gold_answer": "后置主摄 5000 万像素，另配 1200 万超广角与 800 万长焦，前置 3200 万像素",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "牛来 N7 Pro",
+        "part": 2
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_007",
+    "question": "牛来N7s电池多大、充电快不快？",
+    "gold_answer": "4500mAh，支持80W有线快充",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "牛来 N7s",
+        "part": 3
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_008",
+    "question": "牛来N7s卖多少钱？买回来能保修多长时间？",
+    "gold_answer": "官方售价3299元，整机保修18个月",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "牛来 N7s",
+        "part": 3
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_009",
+    "question": "我预算比较紧，平时就刷刷手机，想要个小屏轻点的，牛来 N7 怎么样？屏幕多大、卖多少钱？",
+    "gold_answer": "6.1英寸小屏，售价2999元",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "三款型号选购对比",
+        "part": 4
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_010",
+    "question": "看中牛来 N7 Pro 打游戏，它电池容量和快充功率分别是多少？",
+    "gold_answer": "5000mAh电池，100W快充",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "三款型号选购对比",
+        "part": 4
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_011",
+    "question": "牛来 N7s 的保修期是多久？跟 N7 Pro 比差多少？",
+    "gold_answer": "18 个月，比 N7 Pro 短半年。",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "三款型号选购对比",
+        "part": 5
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_012",
+    "question": "牛来 N7 Pro 的充电功率、保修和售价分别是多少？",
+    "gold_answer": "100W 快充，2 年保修，3999 元。",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "三款型号选购对比",
+        "part": 5
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_013",
+    "question": "想给 N7 Pro 配个官方充电头，买哪个合适、多少钱？",
+    "gold_answer": "牛来 100W 充电器，149 元",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "配件与周边",
+        "part": 6
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_014",
+    "question": "牛来无线降噪耳机 Buds Air 是不是所有机型都能用？卖多少钱？",
+    "gold_answer": "适配全系列，299 元",
+    "gold_sources": [
+      {
+        "filename": "产品与配件目录.txt",
+        "section": "配件与周边",
+        "part": 6
+      }
+    ],
+    "private": false,
+    "category": "产品与配件目录.txt"
+  },
+  {
+    "id": "eval_015",
+    "question": "牛来数码现在线下铺了多少家店、大概有多少员工？",
+    "gold_answer": "全国有 12 家直营门店、超过 200 个授权销售点，员工约 800 人。",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "关于牛来数码",
+        "part": 1
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_016",
+    "question": "我想联系牛来数码咨询点事，打哪个号码？一天里什么时间段有人接？",
+    "gold_answer": "官方客服电话 400-800-8975，服务时间为每天 9:00 至 21:00。",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "关于牛来数码",
+        "part": 1
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_017",
+    "question": "牛来数码这家公司是哪一年、在哪个城市起家的？当时主要做什么？",
+    "gold_answer": "2018 年在杭州成立，最初从事配件代工。",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "发展历程",
+        "part": 2
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_018",
+    "question": "N7s 是和 N7、N7 Pro 一起发布的吗？它具体是什么时候推出来的？",
+    "gold_answer": "不是一起发布的。N7 与 N7 Pro 是 2025 年 3 月发布，N7s 是同年 9 月发布。",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "发展历程",
+        "part": 2
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_019",
+    "question": "上海那家牛来数码体验店具体开在哪儿？",
+    "gold_answer": "上海市徐汇区漕溪北路 88 号",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "线下门店",
+        "part": 3
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_020",
+    "question": "牛来数码北京体验店晚上最晚几点关门？",
+    "gold_answer": "21:30",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "线下门店",
+        "part": 3
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_021",
+    "question": "牛来数码自己的官方商城网址是哪个？",
+    "gold_answer": "mall.niulai.example.com",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "授权线上渠道",
+        "part": 4
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_022",
+    "question": "在京东买牛来数码，怎么判断店铺是不是官方授权的？",
+    "gold_answer": "认准“牛来数码官方授权”标识",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "授权线上渠道",
+        "part": 4
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_023",
+    "question": "我们公司想批量采购牛来数码的设备，最少要买多少台才能走企业采购？",
+    "gold_answer": "50 台",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "企业服务",
+        "part": 5
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_024",
+    "question": "企业批量买牛来数码产品时，能把自己公司的标志做成开机画面吗？有没有专人负责对接？",
+    "gold_answer": "支持企业 LOGO 定制开机画面，并提供专属客户经理对接。",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "企业服务",
+        "part": 5
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_025",
+    "question": "秋季促销里牛来 N7 能降多少钱，最后到手大概什么价？",
+    "gold_answer": "直降 200 元，到手价 2799 元",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "当前促销活动",
+        "part": 6
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_026",
+    "question": "促销期间买牛来 N7 Pro 会送什么东西吗？",
+    "gold_answer": "赠价值 299 元的 Buds Air 无线耳机一副",
+    "gold_sources": [
+      {
+        "filename": "公司与渠道.txt",
+        "section": "当前促销活动",
+        "part": 6
+      }
+    ],
+    "private": false,
+    "category": "公司与渠道.txt"
+  },
+  {
+    "id": "eval_027",
+    "question": "我入手的是牛来 N7 Pro，整机保修能用几年啊？",
+    "gold_answer": "2 年，自签收之日起计算。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "各型号保修期限",
+        "part": 1
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_028",
+    "question": "牛来这几款手机的电池、充电器这类配件，保修能给多久？",
+    "gold_answer": "6 个月，且与整机保修期分开计算。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "各型号保修期限",
+        "part": 1
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_029",
+    "question": "牛来数码的产品在保修期内要是出问题了，一般哪些故障他们负责免费处理？",
+    "gold_answer": "因产品本身质量问题导致的故障，包括无法开机、屏幕非人为损坏、摄像头失灵、电池异常损耗、按键失灵、充电接口故障、主板问题、系统出厂缺陷导致的反复死机等，保修期内免费维修或更换部件。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "保修范围与免责情形",
+        "part": 2
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_030",
+    "question": "我不小心把牛来数码手机摔地上了，屏幕碎了，这种情况他们还给保修吗？",
+    "gold_answer": "不给保修，跌落造成的损坏属于顾客使用不当，不在保修范围内。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "保修范围与免责情形",
+        "part": 2
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_031",
+    "question": "不在保修范围内的牛来数码产品，官方授权网点还给修吗？费用是怎么算的？",
+    "gold_answer": "可以提供付费维修，费用按实际更换的部件和工时计算，维修前会先给报价单，顾客确认后才开工。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "保修范围与免责情形",
+        "part": 3
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_032",
+    "question": "牛来数码的产品修了两次还是不能用，能要求换新或者退钱吗？",
+    "gold_answer": "可以凭维修记录申请更换同型号新机，或者按购机价折旧退款。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "保修范围与免责情形",
+        "part": 3
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_033",
+    "question": "我买的东西收到后不想要了，最晚几天内能申请无理由退货？有什么前提条件吗？",
+    "gold_answer": "签收后7天内，产品无人为损坏可申请无理由退货。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "退换货流程",
+        "part": 4
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_034",
+    "question": "如果用了几天发现性能出故障，多少天内可以申请换货？",
+    "gold_answer": "签收后15天内，出现性能故障可申请换货。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "退换货流程",
+        "part": 4
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_035",
+    "question": "手机屏幕自己不小心摔碎了，还在保修期内，这种情况能免费修吗？",
+    "gold_answer": "不能，人为摔碎不在保修范围，可付费维修。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "常见售后问题",
+        "part": 5
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_036",
+    "question": "我申请退货之后，退款一般要多久才能到账、怎么退回来？",
+    "gold_answer": "检测通过后 3-7 个工作日原路退回。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "常见售后问题",
+        "part": 5
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_037",
+    "question": "牛来手机长时间放着不用的话，电池要怎么存放才不会坏？",
+    "gold_answer": "保持约50%电量存放，并且每隔两个月补电一次，避免电池过放损坏。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "使用与保养建议",
+        "part": 6
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_038",
+    "question": "牛来手机充电时能用别的充电器吗？会不会伤手机？",
+    "gold_answer": "尽量使用原装充电器，混用劣质充电器可能损伤电池与主板。",
+    "gold_sources": [
+      {
+        "filename": "售后与保修.txt",
+        "section": "使用与保养建议",
+        "part": 6
+      }
+    ],
+    "private": false,
+    "category": "售后与保修.txt"
+  },
+  {
+    "id": "eval_039",
+    "question": "N7s 这台机器对外卖多少钱，内部出厂成本大概多少？",
+    "gold_answer": "对外售价 3299 元，出厂成本约 2000 元",
+    "gold_sources": [
+      {
+        "filename": "内部机密资料.txt",
+        "section": "产品成本与定价",
+        "part": 1
+      }
+    ],
+    "private": true,
+    "category": "内部机密资料.txt"
+  },
+  {
+    "id": "eval_040",
+    "question": "对外沟通的时候，成本和毛利这些能不能跟别人讲？",
+    "gold_answer": "不能，成本价与毛利属公司机密，对外沟通一律只报零售价，不得透露成本与毛利",
+    "gold_sources": [
+      {
+        "filename": "内部机密资料.txt",
+        "section": "产品成本与定价",
+        "part": 1
+      }
+    ],
+    "private": true,
+    "category": "内部机密资料.txt"
+  },
+  {
+    "id": "eval_041",
+    "question": "牛来那个代号叫“猎户座”的下一代旗舰，打算什么时候发？",
+    "gold_answer": "2026 年第二季度",
+    "gold_sources": [
+      {
+        "filename": "内部机密资料.txt",
+        "section": "未发布产品 N8 工程机",
+        "part": 2
+      }
+    ],
+    "private": true,
+    "category": "内部机密资料.txt"
+  },
+  {
+    "id": "eval_042",
+    "question": "牛来 N8 工程机准备用什么样的屏幕和电池？",
+    "gold_answer": "6.8 英寸 2K 屏、5500mAh 硅碳电池",
+    "gold_sources": [
+      {
+        "filename": "内部机密资料.txt",
+        "section": "未发布产品 N8 工程机",
+        "part": 2
+      }
+    ],
+    "private": true,
+    "category": "内部机密资料.txt"
+  },
+  {
+    "id": "eval_043",
+    "question": "牛来 N8 工程机的目标售价和成本大概是多少？",
+    "gold_answer": "对外定价 4999 元起，成本控制在 3000 元以内",
+    "gold_sources": [
+      {
+        "filename": "内部机密资料.txt",
+        "section": "未发布产品 N8 工程机",
+        "part": 2
+      }
+    ],
+    "private": true,
+    "category": "内部机密资料.txt"
+  },
+  {
+    "id": "eval_044",
+    "question": "N7 Pro 的曲面屏到底是不是京东方和 TCL 华星一起供的？",
+    "gold_answer": "不是，N7 Pro 曲面屏由京东方独供。",
+    "gold_sources": [
+      {
+        "filename": "内部机密资料.txt",
+        "section": "供应商与采购",
+        "part": 3
+      }
+    ],
+    "private": true,
+    "category": "内部机密资料.txt"
+  },
+  {
+    "id": "eval_045",
+    "question": "N7s 那颗 6400 万像素主摄，用的是哪家哪款传感器？",
+    "gold_answer": "豪威 OV64B。",
+    "gold_sources": [
+      {
+        "filename": "内部机密资料.txt",
+        "section": "供应商与采购",
+        "part": 3
+      }
+    ],
+    "private": true,
+    "category": "内部机密资料.txt"
+  },
+  {
+    "id": "eval_046",
+    "question": "牛来数码在内部文件、系统标识里用哪串数字代表公司自己？",
+    "gold_answer": "89757",
+    "gold_sources": [
+      {
+        "filename": "内部机密资料.txt",
+        "section": "内部代号与保密",
+        "part": 4
+      }
+    ],
+    "private": true,
+    "category": "内部机密资料.txt"
+  },
+  {
+    "id": "eval_047",
+    "question": "牛来 N7 这条产品线在公司内部的代号是什么？",
+    "gold_answer": "北辰",
+    "gold_sources": [
+      {
+        "filename": "内部机密资料.txt",
+        "section": "内部代号与保密",
+        "part": 4
+      }
+    ],
+    "private": true,
+    "category": "内部机密资料.txt"
+  },
+  {
+    "id": "eval_048",
+    "question": "牛来数码那份内部管理制度，外人能看吗？比如发给客户或者供应商行不行？",
+    "gold_answer": "不行，该制度仅限员工查阅、禁止对外泄露，不得提供给顾客、供应商或任何外部人员。",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "",
+        "part": 0
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_049",
+    "question": "牛来数码的内部管理制度主要管哪些方面的事？",
+    "gold_answer": "考勤休假、薪酬职级、报销流程与员工守则。",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "",
+        "part": 0
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_050",
+    "question": "咱们公司年假是怎么算的？干满多久能休几天，请假要走什么流程？",
+    "gold_answer": "入职满一年享5天年假，满五年享10天年假；年假需提前三个工作日在OA系统申请。",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "考勤与休假（工时·年假·病假）",
+        "part": 1
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_051",
+    "question": "请病假的话工资怎么发？需要什么证明材料？",
+    "gold_answer": "病假需提供正规医院证明，每年累计不超过30天的病假发放基本工资的80%。",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "考勤与休假（工时·年假·病假）",
+        "part": 1
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_052",
+    "question": "牛来数码平时工作日加班到几点以后有餐补，一顿补多少钱？",
+    "gold_answer": "晚于19点发放加班餐补，每餐补贴30元",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "加班与餐补（加班补贴·餐费补贴·打车报销）",
+        "part": 2
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_053",
+    "question": "牛来数码法定节假日加班怎么算，能不能换成调休？",
+    "gold_answer": "按三倍工资计算，或安排等额调休",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "加班与餐补（加班补贴·餐费补贴·打车报销）",
+        "part": 2
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_054",
+    "question": "牛来数码的职级一共分几档？P4到P6这档大概能拿多少工资？",
+    "gold_answer": "共分P1至P8八级；P4-P6为中级岗位，月薪区间12000至25000元。",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "薪酬与职级",
+        "part": 3
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_055",
+    "question": "在牛来数码一般什么时候涨工资？涨幅是看什么定的？",
+    "gold_answer": "每年4月与10月各调薪一次，调薪幅度依据绩效评定，绩效分为A、B、C三档。",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "薪酬与职级",
+        "part": 3
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_056",
+    "question": "报销时发票抬头必须开成什么名字？",
+    "gold_answer": "牛来数码有限公司",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "报销流程",
+        "part": 4
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_057",
+    "question": "报销的钱批下来之后，一般什么时候能到账？",
+    "gold_answer": "每月15日和30日两批打款至工资卡",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "报销流程",
+        "part": 4
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_058",
+    "question": "我在牛来数码离职以后，以前接触到的那些内部资料和客户信息，还需要继续保密多长时间？",
+    "gold_answer": "离职之日起三年内保密义务持续有效",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "员工守则",
+        "part": 5
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_059",
+    "question": "在牛来数码工作期间，供应商私下给回扣、礼金或者贵重物品，可以收下吗？",
+    "gold_answer": "不可以，员工不得收受供应商回扣、礼金或贵重物品",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "员工守则",
+        "part": 5
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_060",
+    "question": "牛来数码员工私自把个人账号借给别人用，会有什么后果？",
+    "gold_answer": "视情节轻重给予警告、降职、辞退处理；造成公司损失的，公司保留依法追究赔偿责任的权利；涉嫌违法的，移交司法机关处理。",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "员工守则",
+        "part": 6
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  },
+  {
+    "id": "eval_061",
+    "question": "牛来数码员工平时使用公司设备和办公账号要注意什么？",
+    "gold_answer": "要爱护公司财产，规范使用办公设备与账号权限，不能把个人账号借给他人使用。",
+    "gold_sources": [
+      {
+        "filename": "内部管理制度.txt",
+        "section": "员工守则",
+        "part": 6
+      }
+    ],
+    "private": true,
+    "category": "内部管理制度.txt"
+  }
+]

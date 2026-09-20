@@ -27,6 +27,7 @@ from .agents import get_mcp_tools  # C2：启动暖机调它（依赖方向 main
 from .llm_gateway import start_trace, get_trace_spans
 from .db import init_db, save_trace, get_memories, delete_memory  # 步骤11：记忆治理要读(get)/删(delete)
 from .memory import extract_and_store  # 步骤11：记忆官，回答后异步抽取亮哥的偏好/事实
+from .metrics import collect_metrics  # 步骤12·12B：质量看板聚合（读 traces 表算成本/降级/漏标/检索命中率）
 
 # ===== C2：启动暖机 MCP 工具 =====
 # 为什么：Supervisor 是同步节点、每请求都调 build_tools_manifest() 读 _mcp_tools_cache；
@@ -245,6 +246,16 @@ async def delete_one_memory(memory_id: int, identity: dict = Depends(require_lia
     if not delete_memory(memory_id, "liang"):
         raise HTTPException(status_code=404, detail="记忆不存在或无权删除")
     return {"deleted": memory_id}
+
+
+# ===== 步骤12 · 12B：在线质量看板端点（亮哥专属）=====
+@app.get("/api/metrics")
+async def get_metrics(days: int | None = None, _identity: dict = Depends(require_liang)):
+    """质量看板数据源：把 traces 表里每次真实请求的运行时数据聚合成统计指标。
+    days 可选（?days=7）：只统计最近 N 天；不传=历史全部。
+    🔴 监控数据含成本/降级/漏标等敏感运营信息，故跟记忆治理一样锁 require_liang（游客拿不到、403）。
+    _identity 只用来触发鉴权、函数体里不用它，故加下划线前缀（跟 delete_file 的写法一致）。"""
+    return collect_metrics(days)
 
 
 @app.post("/api/upload")

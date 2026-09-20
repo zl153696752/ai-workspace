@@ -22,3 +22,6 @@ _deploy/
 #      tokenizer.json       (≈17MB)   https://huggingface.co/Xenova/bge-reranker-base/resolve/main/tokenizer.json
 #   3) 核对字节数：onnx≈279301077、tokenizer≈17098079；若只有几百字节=下成LFS指针，删掉重下
 backend/app/models/bge-reranker-base/
+# ── 步骤12 评估产物（跑 e2/e3/e4 生成的成绩单，可随时重跑生成，不进版本库）──
+# 注意：eval_set.json / negatives.json 是评估"考卷"（输入资产、人工抽检过），要提交、别忽略。
+backend/eval/results/
