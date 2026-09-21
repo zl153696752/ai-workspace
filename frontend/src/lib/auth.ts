@@ -20,9 +20,11 @@ export function clearToken(): void {
   if (typeof window !== "undefined") localStorage.removeItem(TOKEN_KEY);
 }
 
-// 造鉴权头：有票返回 { Authorization: "Bearer <票>" }，没票返回 {}。
-// 用法：fetch(url, { headers: { "Content-Type": "application/json", ...authHeaders() } }) —— spread 进去，游客自动不带这个头。
+// 造鉴权头：有票返回双通道头，没票返回 {}。
+// 用法：fetch(url, { headers: { "Content-Type": "application/json", ...authHeaders() } }) —— spread 进去，游客自动不带这两个头。
+// 双通道：Authorization 是标准做法；X-Niulai-Token 是兜底自定义头——ModelScope 创空间的反代会剥掉
+// Authorization 头（实测：票在 storage、前端发了、后端静默收不到），自定义头名代理不认识、原样放行。
 export function authHeaders(): Record<string, string> {
   const t = getToken();
-  return t ? { Authorization: `Bearer ${t}` } : {};
+  return t ? { Authorization: `Bearer ${t}`, "X-Niulai-Token": t } : {};
 }

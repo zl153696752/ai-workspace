@@ -11,6 +11,7 @@ chroma_db/
 frontend_out/
 _probe_modelscope/
 _deploy/
+_reranker-assets/
 # ── 重排模型 bge-reranker-base（279MB，超 GitHub 单文件 100MB 硬限制，故不纳入 GitHub）──
 # 只影响 GitHub 主仓库，不影响部署：_deploy 是独立仓库，sync.ps1 从磁盘拷贝、
 # 其 .gitattributes 第48行已把 models/**/*.onnx 排除出 LFS，会随 Dockerfile COPY 烤进 ModelScope 镜像。

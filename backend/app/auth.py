@@ -9,7 +9,7 @@ import datetime as dt
 
 import bcrypt          # 口令哈希：checkpw 把"输入口令"与"存的哈希指纹"比对（依赖已在 requirements）
 import jwt             # PyJWT：签发/校验 JWT 门票（依赖已在 requirements）
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from .config import JWT_SECRET, ADMIN_PASSWORD_HASH, TOKEN_EXPIRE_DAYS
@@ -68,13 +68,20 @@ def decode_token(token: str) -> dict | None:
 _bearer = HTTPBearer(auto_error=False)
 
 
-def get_identity(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> dict:
+def get_identity(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    x_token: str | None = Header(default=None, alias="X-Niulai-Token"),
+) -> dict:
     """解析本次请求身份，返回 {"is_liang": bool}。这是"可选鉴权"：
-    带有效门票 → 亮哥；没带 / 无效 / 过期 → 游客（不报错）。chat、清单这类接口用它。
+    带有效门票 → 亮哥；没带 / 无效 / 过期 → 游客（不报错）。
+    双票通道：Authorization 是标准做法；X-Niulai-Token 是兜底自定义头——ModelScope 创空间反代
+    会剥掉 Authorization（实测：票在 storage、前端发了、后端静默当游客），自定义头名代理不认识、
+    原样放行。两路都有时以标准头优先。
     """
-    if creds is None:
+    token = creds.credentials if creds is not None else x_token
+    if not token:
         return {"is_liang": False}
-    payload = decode_token(creds.credentials)
+    payload = decode_token(token)
     return {"is_liang": bool(payload and payload.get("sub") == LIANG)}
 
 
