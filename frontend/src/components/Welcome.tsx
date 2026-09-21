@@ -5,20 +5,20 @@ import type { LucideIcon } from "lucide-react";
 import {
   Bot,
   BookOpen,
-  CalendarDays,
-  CloudSun,
+  Brain,
+  GitBranch,
   Globe,
-  Hash,
+  Search,
   Sparkles,
   UtensilsCrossed,
 } from "lucide-react";
 
-// 推荐问题：点击直接发送；6 条覆盖三大能力（知识库问答 ×3、天气 ×1、网页抓取 ×1、人格 ×1）。
+// 推荐问题：点击直接发送；6 条各演示一项硬实力（复合拆解 / 区分度检索 / 长期记忆 / 引用溯源 / 联网抓取 / 人格自述）。
 const SUGGESTIONS: { icon: LucideIcon; text: string }[] = [
-  { icon: CalendarDays, text: "年假几天？" },
-  { icon: Hash, text: "公司代号是什么？" },
+  { icon: GitBranch, text: "上海明天天气怎么样？顺便讲下公司年假规定" },
+  { icon: Search, text: "N7 Pro 和 N7s 到底有什么区别？" },
+  { icon: Brain, text: "你还记得我是做什么工作的吗？" },
   { icon: UtensilsCrossed, text: "加班餐补怎么算？" },
-  { icon: CloudSun, text: "北京现在天气怎么样？" },
   { icon: Globe, text: "帮我看看 example.com 页面的标题是什么" },
   { icon: Bot, text: "介绍下你自己" },
 ];
@@ -37,37 +37,46 @@ export default function Welcome({ onSend }: WelcomeProps) {
         </div>
         <h1 className="mt-5 text-[22px] font-medium">嗨，我是牛来</h1>
         <p className="mt-2 text-sm text-gray-400 text-center leading-6 max-w-[520px]">
-          一个能查知识库、也能联网的 AI 工作区：基于企业文档回答并标注来源，
-          实时抓取网页内容，还能查询任意城市的天气
+          一个能独当一面的企业级 AI Agent：复杂问题自动拆解、并行处理，
+          基于企业文档精准回答并标注来源，有跨会话的长期记忆，还能联网查天气、抓网页
         </p>
 
-        {/* 能力卡片：RAG/MCP 术语故意保留给面试官看；窄窗口降为单列 */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-8 w-full">
+        {/* 能力卡片：功能标题给普通用户、括号里的技术词（RAG/MCP/LangGraph）故意保留给面试官看；4 张 2×2，窄窗口降为单列 */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-8 w-full">
+          <div className="px-4 py-3.5 rounded-xl border border-gray-200 bg-white">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-800">
+              <GitBranch className="w-4 h-4 text-[#4d6bfe]" />
+              复杂问题拆解
+            </div>
+            <p className="mt-1.5 text-xs text-gray-400 leading-5">
+              一次问好几件事，自动拆成子任务并行处理再汇总（LangGraph 多 Agent 编排）
+            </p>
+          </div>
           <div className="px-4 py-3.5 rounded-xl border border-gray-200 bg-white">
             <div className="flex items-center gap-2 text-sm font-medium text-gray-800">
               <BookOpen className="w-4 h-4 text-[#4d6bfe]" />
               知识库问答
             </div>
             <p className="mt-1.5 text-xs text-gray-400 leading-5">
-              上传企业文档检索增强（RAG），回答带编号引用，来源卡片可展开核对、下载原文
+              企业文档混合检索 + Reranker 精排（RAG），回答带编号引用，来源卡片可核对、下载原文
             </p>
           </div>
           <div className="px-4 py-3.5 rounded-xl border border-gray-200 bg-white">
             <div className="flex items-center gap-2 text-sm font-medium text-gray-800">
-              <CloudSun className="w-4 h-4 text-[#4d6bfe]" />
-              天气查询
+              <Brain className="w-4 h-4 text-[#4d6bfe]" />
+              长期记忆
             </div>
             <p className="mt-1.5 text-xs text-gray-400 leading-5">
-              问任意城市当前或未来天气，MCP 协议接入 Open-Meteo，真实数据不编造
+              跨会话记住确认过的重要信息，越用越懂你（SQLite 持久化）
             </p>
           </div>
           <div className="px-4 py-3.5 rounded-xl border border-gray-200 bg-white">
             <div className="flex items-center gap-2 text-sm font-medium text-gray-800">
               <Globe className="w-4 h-4 text-[#4d6bfe]" />
-              网页抓取
+              联网工具
             </div>
             <p className="mt-1.5 text-xs text-gray-400 leading-5">
-              给一个网址，实时抓取页面内容后回答，MCP 协议接入官方 fetch 服务
+              查任意城市实时天气、抓取指定网页内容（MCP 协议接入 Open-Meteo / fetch）
             </p>
           </div>
         </div>

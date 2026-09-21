@@ -5,9 +5,9 @@ import "./globals.css";
 
 // 下面两项会出现在浏览器标签页和页面源码里（原为脚手架默认值）。
 export const metadata: Metadata = {
-  title: "牛来 · AI 知识库助手",
+  title: "牛来 · 企业级 AI Agent",
   description:
-    "基于 FastAPI + Next.js + Chroma + DeepSeek 的 RAG 知识库助手，支持流式对话、文档上传、引用溯源、Agent 工具调用与 MCP 接入。",
+    "能独当一面的企业级 AI Agent：LangGraph 多 Agent 编排、复合问题拆解并行，混合检索 + Reranker 精排的企业知识库问答（引用可溯源），跨会话长期记忆，MCP 联网工具。基于 FastAPI + Next.js + Chroma + DeepSeek。",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

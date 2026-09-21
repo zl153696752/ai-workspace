@@ -256,7 +256,7 @@ export default function Sidebar({
           </div>
         )}
         <div className="text-[11px] text-gray-300 text-center">
-          RAG · FastAPI · Chroma · DeepSeek
+          LangGraph · RAG · FastAPI · Chroma · DeepSeek
         </div>
       </div>
     </aside>

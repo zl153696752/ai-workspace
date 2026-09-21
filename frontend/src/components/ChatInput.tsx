@@ -44,7 +44,7 @@ export default function ChatInput({ input, setInput, loading, onSend, onStop, te
         />
         <div className="flex items-center justify-between px-3 pb-2">
           <span className="text-[11px] text-gray-300 pl-1">
-            基于知识库回答 · 引用可查证
+            复杂问题自动拆解 · 回答引用可查证
           </span>
           {/* 生成中：发送按钮变停止按钮 */}
           {loading ? (

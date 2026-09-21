@@ -14,9 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mcp.server.fastmcp import FastMCP   # MCP 官方 Python SDK 的服务端框架，装饰器风格类似 FastAPI
 # 检索能力复用主项目那一份，不重复实现。起别名 rag_search 是必须的：下面要用 @mcp.tool() 定义同名函数
 # search_knowledge_base，不起别名后者会覆盖导入的名字，工具内部再调用就变成无限递归。
-from app.main import search_knowledge_base as rag_search
+from app.rag import search_knowledge_base as rag_search
 
-mcp = FastMCP("ai-workspace-knowledge")  # 服务名：MCP 客户端的工具列表里会看到它
+mcp = FastMCP("niulai-knowledge")  # 服务名：MCP 客户端的工具列表里会看到它
 
 
 # @mcp.tool() 把普通函数注册成 MCP 工具（同 LangChain 的 @tool）：工具名取函数名、说明取 docstring、参数说明取类型注解

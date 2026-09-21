@@ -1,6 +1,6 @@
-# 牛来 · 中文知识库 AI 助手
+# 牛来 · 企业级 AI Agent
 
-一个能查自己知识库、能联网、会标注引用来源的中文 AI 助手。从零手写 RAG 检索链路，已部署上线。
+一个能独当一面的企业级 AI Agent：LangGraph 多 Agent 编排（1 Supervisor + 3 Workers），把复杂问题拆成子任务并行处理；混合检索 + Reranker 精排的企业知识库问答，回答带编号引用可溯源；有跨会话长期记忆，能联网调工具，全程可观测、可离线评估。已部署上线。
 
 **🔗 在线演示**：<https://www.modelscope.cn/studios/zl153696752/niulai>
 
@@ -14,13 +14,17 @@
 
 | 能力 | 说明 |
 | --- | --- |
-| 流式对话 | SSE 逐字输出，打字机效果 |
-| 多轮记忆 | 带对话历史，支持「那餐补呢」这类省略式追问（先做查询改写） |
-| 知识库问答 | 上传 `.txt` / `.md` / `.pdf`，切片入库后语义检索 |
-| 引用溯源 | 回答末尾标 `[1]`，点开看命中的原文切片 |
-| 联网工具 | 通过 MCP 接入网页抓取与天气查询 |
-| 技能包 | `backend/skills/` 下的 Markdown 操作手册，模型按需调用 `load_skill` 取正文 |
-| 助手人格 | 固定人设「牛来」；检索未命中时如实说不知道，不编造 |
+| 多 Agent 编排 | LangGraph 手写 StateGraph：Supervisor 把复合问题拆成子任务，`Send` 动态并行派发 retrieve / tool Worker，fan-in 后由 synthesize 汇总 |
+| 知识库问答 | 上传 `.txt` / `.md` / `.pdf`，结构化切片入库；混合检索（向量 + BM25 + RRF 融合）+ bge-reranker 精排 + Self-CRAG 质检重查 |
+| 引用溯源 | 回答里标 `[1][2]`，点开看命中的原文切片、下载原文件；synthesize 只把真正引用的切片发成卡片 |
+| 长期记忆 | 跨会话记住确认过的重要信息（SQLite 持久化），带记忆治理入口（看系统记了啥、一键删错记）|
+| 身份与隔离 | JWT 鉴权，游客 / 亮哥双身份；私人文档按身份过滤，游客检索不到也看不到 |
+| 联网工具 | 通过 MCP 接入网页抓取（fetch）与天气查询（Open-Meteo）；还自制了一个知识库 MCP 服务端对外开放 |
+| 技能包 | `backend/skills/` 下的 Markdown 操作手册，模型按需调用 `load_skill` 取正文（渐进式披露）|
+| 可观测性 | 每次回答的成本 / token / 延迟 / 节点级推理链路；亮哥专属质量看板聚合漏标率、降级率等 |
+| 离线评估 | 评估集自动生成 + 检索层（Recall@k / MRR / NDCG）+ 生成层（LLM-as-judge 打忠实度 / 相关性）|
+| 流式对话 | SSE 逐字输出，打字机效果；先渲染引用卡片再渲染正文 |
+| 助手人格 | 固定人设「牛来」，按身份切换语气；检索未命中时如实说不知道，绝不编造 |
 
 ## 效果
 
@@ -32,26 +36,41 @@
 
 ## 架构
 
-```mermaid
 flowchart TB
-    U["浏览器"] -->|"同源 HTTP · 单端口"| F["FastAPI 应用组装"]
-    F --> S["Next.js 静态导出产物"]
-    F --> G["LangGraph 编排"]
-    G -->|"① 查询改写"| L["DeepSeek API"]
-    G -->|"② 代码先检索"| R["rag.py 检索服务"]
-    R --> B["bge-small-zh-v1.5 · ONNX int8"]
-    R --> C[("Chroma 向量库")]
-    G -->|"③ 带资料生成"| L
-    G -->|"需要联网时"| M["MCP 工具 · fetch / weather"]
-    L -->|"SSE 逐字回流"| F
-```
+    U["浏览器"] -->|"同源 HTTP · 单端口"| F["FastAPI 应用组装 + 静态托管"]
+    F -->|"POST /api/chat"| SUP
+
+    subgraph G["LangGraph 多 Agent 编排 · 1 Supervisor + 3 Workers"]
+        direction TB
+        SUP["Supervisor<br/>拆分子任务 · 判意图 · 定 scope"]
+        RET["retrieve Worker ×N<br/>混合检索 + Reranker 精排 + Self-CRAG"]
+        TOOL["tool Worker ×M<br/>MCP 工具调用"]
+        SYN["synthesize Worker<br/>fan-in 合成 + 编号溯源"]
+        SUP -->|"Send 并行派发 · kb 子任务"| RET
+        SUP -->|"Send 并行派发 · tool 子任务"| TOOL
+        SUP -.->|"全闲聊兜底"| SYN
+        RET -->|"固定边 · fan-in"| SYN
+        TOOL -->|"固定边 · fan-in"| SYN
+    end
+
+    L["DeepSeek API"]
+    SUP -.->|"拆分 / 分类"| L
+    RET -.->|"改写 / 质检"| L
+    SYN -.->|"合成生成"| L
+    RET -->|"向量召回"| EMB["bge-small-zh-v1.5 · ONNX int8"]
+    RET -->|"精排"| RR["bge-reranker-base · ONNX int8"]
+    RET --> C[("Chroma 向量库")]
+    TOOL --> M["MCP 服务端 · fetch / weather"]
+    SYN -->|"SSE 逐字回流"| F
 
 **一次提问的完整链路**：
 
-1. 前端 `POST /api/chat`，后端先让 DeepSeek 把口语化问题改写成完整问句（「那餐补呢」→「公司制度里加班餐补怎么算」）
-2. **代码**（而不是 Agent）拿改写后的问句查 Chroma，取 top-3，用 `dist < 1.1` 过一道距离闸门
-3. 命中的切片作为资料塞进提示词，交给 LangGraph 生成回答，SSE 逐字流回前端
-4. 前端先渲染引用卡片、再渲染正文（卡片先出场，避免正文引用了 `[1]` 而卡片还没到）
+1. 前端 `POST /api/chat`，进入 LangGraph 图。**Supervisor** 调 DeepSeek 把问题拆成子任务，每个子任务判意图（kb / tool / chitchat）、定作用域 scope（company / general / both）
+2. **`route_subtasks` 条件边**按子任务用 `Send` **动态并行派发**：kb → retrieve Worker、tool → tool Worker（几个子任务派几个实例，`Promise.all` 式并行）
+3. 每个 **retrieve Worker**：先做查询改写，再混合检索（向量召回 + BM25 关键词召回 → 身份过滤 → RRF 融合）→ bge-reranker 精排取 top-3 → Self-CRAG 质检（reranker logit 阈值 `-2.0`），不合格则有界重查一次
+4. **tool Worker** 按需调 MCP 工具（天气 / 网页抓取）拿回结果
+5. **fan-in**：所有 Worker 跑完，产出的切片 / 工具结果经 add reducer 合并回全局 State，**synthesize Worker** 只执行一次——按 scope 分流话术合成回答，用到的切片标 `[n]`，SSE 逐字流回前端
+6. 前端先渲染引用卡片、再渲染正文（卡片先出场，避免正文引用了 `[1]` 而卡片还没到）
 
 ## 技术栈
 
@@ -104,6 +123,20 @@ Next.js 静态导出（`output: "export"`）后由 FastAPI `StaticFiles` 托管�
 前端 API 基地址在生产环境是**空串**（走相对路径），开发环境才是 `http://localhost:8000`。`process.env.NODE_ENV` 由 Next.js 在**构建时**替换成字符串字面量，打进产物的代码里不存在 `process` 这个变量，所以浏览器里不会报错。
 
 > 仓库里同时保留了三代 Agent 实现（手写版 / LangChain / LangGraph），靠 `USE_LANGCHAIN`、`USE_LANGGRAPH` 两个开关切换，目的是对照学习「框架到底替我做了什么」。**生产项目只会保留一套**，这里共存是刻意的学习设计。
+
+## 可观测性：推理链路 + 质量看板
+
+企业级 Agent 不能是黑盒。牛来把"每次回答背后发生了什么"完全摊开，分**单次**和**全局**两个视角（均仅亮哥可见）：
+
+**① 推理链路（单次请求级）**——每条回答下方挂一个可展开的「🔍 推理链路」抽屉，摊开这次问答的完整执行轨迹：共几次模型调用、总耗时、prompt/completion tokens、成本，以及**节点级 trace**（Supervisor 拆了哪些子任务、每个 retrieve 的检索质检 grade、有没有触发降级/重查）。哪一步慢、哪一步烧钱、哪一步降级，一眼定位。
+
+![推理链路](docs/images/05-trace.png)
+
+**② 质量看板（全局聚合级）**——侧边栏「质量看板」打开一个模态，把所有真实请求的 trace 聚合成健康度指标：核心数字（总请求 / 总成本 / 平均延迟 / 降级率）、检索质量（命中率 / 空手率 / 重查率 / 漏标率）、意图·作用域·身份三类分布、各环节成本排序。
+
+![质量看板](docs/images/06-metrics.png)
+
+数据全部来自每次请求写进 SQLite `traces` 表的运行时信号，`metrics.py` 只读聚合、不额外采集。它跟**离线评估**互补——离线是"期末考试"（固定题库、有标准答案），质量看板是"行车记录仪"（真实请求、无标准答案，靠运行时信号看健康度）。
 
 ## 本地跑起来
 
@@ -165,25 +198,33 @@ pnpm dev
 ai-workspace/
 ├── backend/
 │   ├── app/
-│   │   ├── config.py           # 配置与资源单例：env、模型客户端、Chroma、三开关
-│   │   ├── rag.py              # 检索服务：文本提取、切片、向量检索
-│   │   ├── agents.py           # Agent 编排：三代实现 + MCP 加载器
+│   │   ├── graph.py            # 🔴 LangGraph 多 Agent 编排核心：Supervisor + retrieve/tool/synthesize，Send 并行 + fan-in
+│   │   ├── llm_gateway.py      # 模型调用统一收口：tenacity 重试/超时/降级 + token/成本/延迟埋点
+│   │   ├── rag.py              # 检索：结构化切片、混合检索（向量+BM25+RRF）、Self-CRAG 质检重查
+│   │   ├── reranker.py         # bge-reranker-base 精排（ONNX cross-encoder，缺失时降级 RRF）
+│   │   ├── embeddings_bge.py   # 自定义中文嵌入函数（bge-small-zh，ONNX Runtime）
+│   │   ├── memory.py           # 记忆官：后台从对话抽取长期记忆（步骤11）
+│   │   ├── db.py               # SQLite 持久化层（标准库 sqlite3 无 ORM）：traces 可观测表 + 长期记忆 CRUD
+│   │   ├── metrics.py          # 在线质量看板：把 traces 运行时数据聚合成统计指标（步骤12B）
+│   │   ├── auth.py             # JWT 鉴权 + bcrypt 口令哈希 + 游客/亮哥双身份守卫
+│   │   ├── agents.py           # 人格提示词 / 合成提示词 / MCP 加载器 / 技能与工具清单
+│   │   ├── config.py           # 配置与资源单例：env、模型客户端、Chroma、USE_MCP 开关
 │   │   ├── skills.py           # 技能包加载器（list_skills / load_skill）
-│   │   ├── embeddings_bge.py   # 自定义中文嵌入函数（ONNX Runtime）
-│   │   ├── main.py             # 应用组装 + 六个路由 + 静态文件托管
-│   │   ├── mcp_server.py       # 自制 MCP Server 样例
-│   │   └── models/bge-small-zh-v1.5/   # 嵌入模型（ONNX int8 + tokenizer）
+│   │   ├── main.py             # FastAPI 应用组装 + 路由 + 静态托管 + 记忆治理端点
+│   │   ├── mcp_server.py       # 自制知识库 MCP 服务端（把检索能力开放给外部客户端）
+│   │   └── models/             # bge-small-zh-v1.5 嵌入 + bge-reranker-base 精排（ONNX int8）
 │   ├── skills/product-guide/SKILL.md   # 技能包正文（Markdown 操作手册）
 │   ├── seed.py                 # 种子文档灌入脚本（容器启动时先跑）
 │   └── requirements.txt
 ├── frontend/src/
 │   ├── app/page.tsx            # 页面：业务编排
 │   ├── components/             # Sidebar / Welcome / MessageList / ChatInput
-│   ├── hooks/                  # useConversations / useKnowledgeFiles
-│   ├── lib/api.ts              # API 基地址（开发/生产自动切换）
+│   ├── hooks/                  # useConversations / useKnowledgeFiles / useAuth
+│   ├── lib/                    # api.ts（基地址切换）/ auth.ts（token 存取）
 │   └── types.ts                # 共享类型
 ├── docs/
 │   ├── 项目实施手册.md          # 5000+ 行完整实施记录（含所有踩坑复盘）
+│   ├── 企业级改造方案.md         # 架构升级与实施路线图（步骤清单）
 │   └── images/                 # README 配图
 └── README.md
 ```
@@ -192,11 +233,11 @@ ai-workspace/
 
 如实写，不粉饰：
 
-- **容器重启后知识库会清空**。创空间免费档的磁盘不保证跨重启持久，每次启动靠 `seed.py` 重建种子文档。**你上传的文档会消失**，需要重新上传
+- **容器重启后知识库会清空**。创空间免费档磁盘不保证跨重启持久，每次启动靠 `seed.py` 重建种子文档。**你上传的文档会消失**；长期记忆（SQLite）同样不跨重启持久
 - **免费档可能休眠**。休眠策略未实测，长时间无访问后首次打开可能要等容器冷启动
-- **`dist < 1.1` 是单一经验阈值**。知识库规模变大后可能需要重新标定，也可能需要给引用卡片单独加一道更严的阈值
-- **阈值偏松的代价**：偶尔会多冒一张不太相关的引用卡片（擦线过了闸门）。模型自己不会引用它，但卡片会显示
-- **三代 Agent 实现共存**是学习设计，不是生产实践
+- **Self-CRAG 阈值 `-2.0` 是经验值**。跑 Precision-Recall 曲线标定的，语料分布大变后可能需要重新标定
+- **长期记忆目前只对亮哥生效**。游客身份不写记忆（`memory.py` 抽取、`db.py` 存储都按身份隔离），这是刻意的隐私设计，不是没做完
+- **Reranker 缺失时降级为纯 RRF**。`bge-reranker-base`（279 MB）走 `_deploy` 同步，若未部署则不精排，功能可用、精度略降
 - **嵌入模型用 int8 量化**，相比 fp32 有轻微精度损失（实测相似度区间 0.7421~0.8661 vs fp32 的 0.7483~0.8830），换来体积从 86 MB 降到 23 MB
 
 ## 实施手册

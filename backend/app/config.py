@@ -38,8 +38,8 @@ collection = chroma_client.get_or_create_collection(name="knowledge", embedding_
 CHUNK_SIZE = 300     # 每片最多 300 字：太短上下文不足，太长一片混多个话题降低精度，300 是实测平衡点
 CHUNK_OVERLAP = 50   # 相邻片重叠 50 字：避免硬切把句子拦腰截断，保证任一句至少在某一片里完整
 
-# ===== 架构开关（学习对照用）=====
-# 同一个 /api/chat 保留三套实现（手写版 / LangChain / LangGraph），靠开关决定走哪套，方便对照“框架做了什么”。
+# ===== 架构开关 =====
+# 编排已统一为 LangGraph 单一生产路径（手写版 / LangChain 对照版已移除）。当前只剩 USE_MCP 一个开关，控制是否加载外部工具服务。
 USE_MCP = True         # True：加载外部 MCP 工具服务（网页抓取、天气），失败自动降级为“只有知识库工具”，不影响启动
 # ===== 鉴权配置（步骤4：JWT + 双身份）=====
 # 🔴 三项全从环境变量读，绝不写死进代码或前端包——密钥一旦进前端，谁都能伪造"亮哥门票"。
