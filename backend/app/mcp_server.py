@@ -8,7 +8,7 @@ import os
 import sys
 
 # 把 backend 根目录加进模块搜索路径：无论被 python -m app.mcp_server 启动还是被客户端用文件路径拉起，
-# 下面的 from app.main import ... 都能成立（两种方式 sys.path 不同，客户端用文件路径拉起时 backend 不在搜索路径里）。
+# 下面的 from app.rag import ... 都能成立（两种方式 sys.path 不同，客户端用文件路径拉起时 backend 不在搜索路径里）。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp.server.fastmcp import FastMCP   # MCP 官方 Python SDK 的服务端框架，装饰器风格类似 FastAPI

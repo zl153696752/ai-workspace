@@ -36,6 +36,7 @@
 
 ## 架构
 
+```mermaid
 flowchart TB
     U["浏览器"] -->|"同源 HTTP · 单端口"| F["FastAPI 应用组装 + 静态托管"]
     F -->|"POST /api/chat"| SUP
@@ -62,6 +63,7 @@ flowchart TB
     RET --> C[("Chroma 向量库")]
     TOOL --> M["MCP 服务端 · fetch / weather"]
     SYN -->|"SSE 逐字回流"| F
+```
 
 **一次提问的完整链路**：
 
@@ -78,11 +80,15 @@ flowchart TB
 | --- | --- | --- |
 | 后端 | FastAPI + Python | Python 3.13 |
 | 前端 | Next.js（静态导出）+ React + TypeScript + Tailwind | next 16.3.3 / react 19.2.8 |
+| Agent 编排 | LangGraph（手写 StateGraph，唯一生产路径） | langgraph 1.2.11 |
 | 向量库 | Chroma | 1.5.9 |
 | 嵌入模型 | bge-small-zh-v1.5（ONNX int8，512 维） | 随仓库打包 22.9 MB |
+| 重排模型 | bge-reranker-base（ONNX int8，cross-encoder 精排） | 走 _deploy 同步，缺失时降级 RRF |
+| 关键词检索 | jieba 分词 + rank_bm25（与向量召回 RRF 融合） | BM25 |
 | 大模型 | DeepSeek（OpenAI 兼容格式） | API |
-| Agent 编排 | LangGraph（主力）/ LangChain / 手写版 | langgraph 1.2.11 |
-| 工具协议 | MCP（fetch + 天气） | mcp 1.29.1 |
+| 持久化 | SQLite（标准库 sqlite3，长期记忆存储，无 ORM） | Python 内置 |
+| 鉴权 | JWT（PyJWT）+ bcrypt 口令哈希，游客 / 亮哥双身份 | — |
+| 工具协议 | MCP（fetch + 天气，另自制知识库 MCP 服务端） | mcp 1.29.1 |
 | 部署 | ModelScope 创空间 · Docker 单容器 | `python:3.13-slim` |
 | 包管理 | 后端 pip，前端 pnpm | pnpm 12 |
 
@@ -102,27 +108,35 @@ Chroma 自带 `all-MiniLM-L6-v2`，词表是 30522 个**英文** wordpiece。实
 
 附带收益：BGE 不做定长 padding，单次编码约 0.001 s，比 Chroma 写死 `padding length=256` 的 MiniLM 快约 90 倍；镜像小了 63 MB。
 
-### 2. 双阈值检索：距离闸门 + 模型自判
+### 2. 检索质量：从「单向量 + 距离闸门」升级到「混合检索 + 精排 + 自检」
 
-`rag.py` 里 `dist < 1.1` 是第二道防线，第一道是模型自己决定「这问题该不该查库」。
+最早只有向量召回，拿 Chroma 的 `dist < 1.1` 当闸门。但纯向量对「型号、代号」这类**关键词精确匹配**很弱（N7 Pro 和 N7s 的语义向量几乎重叠），且单一距离阈值是拍脑袋的经验值，换个语料就失准。
 
-1.1 这个数是实测标定的：命中的答案切片落在 **0.59~0.88**，同文档里不相关的小节落在 **1.03~1.39**，1.1 正好卡在两堆中间。往上调会漏答，往下调会放进无关切片污染提示词。
+现在换成三段式：
 
-⚠️ 一个容易踩的坑：Chroma 建 collection 时不传 metadata，默认用的是 **l2（平方欧氏）空间**而不是 cosine。对单位向量而言 `l2² = 2 × cosine 距离`，所以换嵌入模型后这个阈值必须重新标定，不能沿用旧数。
+- **混合检索**：向量召回（语义）+ BM25 关键词召回（精确匹配型号/代号），用 **RRF** 融合两路排名，补上纯向量的短板；
+- **Reranker 精排**：`bge-reranker-base`（cross-encoder）把「问题 + 切片」拼一起重新打分取 top-3，比双塔向量召回准得多；
+- **Self-CRAG 自检**：用 reranker 的 logit 分数判断这批切片相不相关（阈值 `-2.0`，跑 Precision-Recall 曲线标定的），不合格就换查询词有界重查一次。
 
-### 3. 检索由代码先做，不交给 Agent 自主决定
+⚠️ 留个老坑做纪念：Chroma 建 collection 不传 metadata 时默认是 **l2（平方欧氏）空间**不是 cosine，对单位向量 `l2² = 2 × cosine 距离`——当年 `dist < 1.1` 极易标错就有它一份。换成 reranker 打分后，这个空间差异不再影响最终排序。
 
-LangGraph 版的图只负责「基于资料可靠地生成回答」，检索是代码在进图之前做完的。
+### 3. 为什么上多 Agent 编排，而不是一个 Agent 包办
 
-让 Agent 自己决定要不要查库看起来更「智能」，但有两个实际代价：引用卡片会晚于正文出现（时序错乱），以及未命中时的「自然回应」不可控。取舍原则是**确定性的活给代码，生成性的活给模型**，顺带还省一次决策调用。
+早期是「代码先检索、再进图生成」的串行链路。但遇到**复合问题**（「上海天气怎么样？顺便说下公司年假和餐补」）就抓瞎——一句话里混着工具调用和多个知识库子查询，串行链路只能当整体去检索，顾此失彼。
+
+现在用 LangGraph 手写 StateGraph 做**多 Agent 编排**：
+
+- **Supervisor** 把复合问题拆成带意图、带作用域的子任务；
+- **`Send` 动态并行派发**：几个子任务就派几个 Worker 实例并行跑（kb→retrieve、tool→tool），像 `Promise.all`；
+- **fan-in 汇总**：所有 Worker 跑完、State 合并后，synthesize 只执行一次统一合成。
+
+取舍点：多 Agent 比单 Agent 复杂（要处理 State reducer、并行 fan-in、动态派发），但它能**把复杂问题分而治之**，每个 Worker 职责单一、可独立观测和评估。对一个要「独当一面」的企业级 Agent，这个复杂度值得。
 
 ### 4. 单容器同源部署
 
 Next.js 静态导出（`output: "export"`）后由 FastAPI `StaticFiles` 托管，一个进程一个端口。免 CORS、免 nginx、免第二个容器。
 
 前端 API 基地址在生产环境是**空串**（走相对路径），开发环境才是 `http://localhost:8000`。`process.env.NODE_ENV` 由 Next.js 在**构建时**替换成字符串字面量，打进产物的代码里不存在 `process` 这个变量，所以浏览器里不会报错。
-
-> 仓库里同时保留了三代 Agent 实现（手写版 / LangChain / LangGraph），靠 `USE_LANGCHAIN`、`USE_LANGGRAPH` 两个开关切换，目的是对照学习「框架到底替我做了什么」。**生产项目只会保留一套**，这里共存是刻意的学习设计。
 
 ## 可观测性：推理链路 + 质量看板
 
