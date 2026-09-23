@@ -84,6 +84,7 @@ def build_intent_system(is_liang: bool) -> str:
         "怎么上传知识库文档 → [{\"intent\":\"tool\",\"sub_query\":\"如何上传知识库文档\",\"scope\":\"general\"}]\n"
         "公司报销标准是多少，顺便看下明天上海天气 → [{\"intent\":\"kb\",\"sub_query\":\"公司报销标准\",\"scope\":\"company\"},{\"intent\":\"tool\",\"sub_query\":\"上海明天天气\",\"scope\":\"general\"}]\n"
         "上海明天天气怎么样？顺便帮我看看我们公司的年假制度和餐补制度 → [{\"intent\":\"tool\",\"sub_query\":\"上海明天天气\",\"scope\":\"general\"},{\"intent\":\"kb\",\"sub_query\":\"公司年假制度\",\"scope\":\"both\"},{\"intent\":\"kb\",\"sub_query\":\"公司餐补制度\",\"scope\":\"company\"}]\n"
+        "（上文在聊公司福利）那餐补呢 → [{\"intent\":\"kb\",\"sub_query\":\"公司餐补制度\",\"scope\":\"company\"}]\n"
         "你好啊 → [{\"intent\":\"chitchat\",\"sub_query\":\"你好啊\",\"scope\":\"general\"}]\n"
         "帮我写首关于秋天的诗 → [{\"intent\":\"chitchat\",\"sub_query\":\"写一首关于秋天的诗\",\"scope\":\"general\"}]"
     )
@@ -128,9 +129,14 @@ def supervisor_node(state: AgentState) -> dict:
     query = state["query"]
     is_liang = state.get("is_liang", False)
     try:
+        # 🔑 指代消解需要对话历史：取最近几轮(截断控 token) + 当前这句完整原话，一起喂给模型，
+        #    它才能把「那餐补呢」这类依赖上文的问题补成独立完整的 sub_query。
+        prior = [{"role": m.get("role", "user"), "content": (m.get("content") or "")[:200]}
+                 for m in (state.get("messages") or [])[-6:-1]]
         resp = chat(
-            messages=[{"role": "system", "content": build_intent_system(is_liang)},
-                      {"role": "user", "content": query}],
+            messages=[{"role": "system", "content": build_intent_system(is_liang)}]
+                     + prior
+                     + [{"role": "user", "content": query}],
             purpose="supervisor",
             temperature=0,
         )
