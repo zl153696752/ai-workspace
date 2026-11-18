@@ -76,9 +76,9 @@ def get_identity(
     带有效门票 → 亮哥；没带 / 无效 / 过期 → 游客（不报错）。
     双票通道：Authorization 是标准做法；X-Niulai-Token 是兜底自定义头——ModelScope 创空间反代
     会剥掉 Authorization（实测：票在 storage、前端发了、后端静默当游客），自定义头名代理不认识、
-    原样放行。两路都有时以标准头优先。
+    原样放行。两路都有时以自定义头优先——FC 网关会把 Authorization 覆盖成平台自己的 JWT（alg 非 HS256，必验败），标准头已不可信。
     """
-    token = creds.credentials if creds is not None else x_token
+    token = x_token or (creds.credentials if creds is not None else None)
     if not token:
         return {"is_liang": False}
     payload = decode_token(token)
